@@ -1,0 +1,72 @@
+package com.demo;
+
+
+
+/**
+ * Example demonstrating instantiation of any class at runtime, not just CommonDataItem subclasses
+ */
+public class GenericClassInstantiationExample {
+
+    /**
+     * Creates and instantiates any class by its name
+     * @param className Fully qualified class name to instantiate
+     * @return The instantiated object
+     */
+    public static Object createAndInstantiateClass(String className) {
+        try {
+            // Load the class by name
+            Class<?> clazz = Class.forName(className);
+
+            // Create an instance using Java 17 compatible approach
+            Object instance = clazz.getDeclaredConstructor().newInstance();
+
+            // Use our utility to populate all fields
+            DataItemInstantiationUtility1.instantiateDataItem(instance);
+
+            System.out.println("Successfully instantiated: " + clazz.getSimpleName());
+            return instance;
+
+        } catch (ClassNotFoundException e) {
+            System.err.println("Class not found: " + className);
+            e.printStackTrace();
+        } catch (ReflectiveOperationException e) {
+            System.err.println("Error instantiating class: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("Unexpected error: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        return null;
+    }
+
+    /**
+     * Example usage for generic classes
+     */
+    public static void main(String[] args) {
+        // Example with the standalone class
+        Object standaloneObject = createAndInstantiateClass("com.demo.StandaloneDataClass");
+
+        // In a real scenario, you would cast it to the expected type if needed
+        if (standaloneObject != null) {
+            System.out.println("Object has been instantiated: " + standaloneObject.getClass().getName());
+        }
+
+        // This is how your original code pattern would look
+        try {
+            String className = "com.demo.StandaloneDataClass";
+
+            // Create an instance using reflection
+            Object dataItem = Class.forName(className).getDeclaredConstructor().newInstance();
+
+            // Populate the object structure
+            DataItemInstantiationUtility1.instantiateDataItem(dataItem);
+
+            // Now dataItem has all its fields instantiated
+            System.out.println("Instantiated object of type: " + dataItem.getClass().getName());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
