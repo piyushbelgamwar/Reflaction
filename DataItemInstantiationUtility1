@@ -1,0 +1,166 @@
+package com.demo;
+
+
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * This utility class generates default object structure with empty values which is utilized during retrieve of data Item
+ * Enhanced for Java 17 compatibility
+ */
+public class DataItemInstantiationUtility1 {
+
+    private static final Logger log = LoggerFactory.getLogger(DataItemInstantiationUtility.class);
+
+    // Keep track of processed classes to prevent infinite recursion in case of circular references
+    private static final ThreadLocal<Set<Object>> processedObjects = ThreadLocal.withInitial(HashSet::new);
+
+    /**
+     * Instantiates a data item and all its nested fields
+     *
+     * @param o The object to instantiate fields for
+     */
+    public static void instantiateDataItem(Object o) {
+        if (o == null) return;
+
+        // Reset processed objects if this is the top-level call
+        if (processedObjects.get().isEmpty()) {
+            processedObjects.set(new HashSet<>());
+        }
+
+        try {
+            // Skip if already processed to prevent infinite recursion
+            if (processedObjects.get().contains(o)) {
+                return;
+            }
+
+            // Add to processed set
+            processedObjects.get().add(o);
+
+            Field[] fields = o.getClass().getDeclaredFields();
+
+            for (Field field : fields) {
+                try {
+                    // Skip static and final fields
+                    if (Modifier.isStatic(field.getModifiers()) || Modifier.isFinal(field.getModifiers())) {
+                        continue;
+                    }
+
+                    field.setAccessible(true);
+
+                    if (field.get(o) == null) {
+                        Class<?> fieldType = field.getType();
+
+                        if (List.class.isAssignableFrom(fieldType)) {
+                            List<Object> list = new ArrayList<>();
+                            field.set(o, list);
+
+                            // We only try to populate the list if we can determine its generic type
+                            if (field.getGenericType() instanceof ParameterizedType) {
+                                instantiateList(field, list);
+                            }
+                        } else if (shouldInstantiateClass(fieldType)) {
+                            try {
+                                // Try to create instance using default constructor
+                                Constructor<?> constructor = fieldType.getDeclaredConstructor();
+                                constructor.setAccessible(true);
+                                Object instance = constructor.newInstance();
+                                field.set(o, instance);
+
+                                // Recursively process this new instance
+                                instantiateDataItem(instance);
+                            } catch (NoSuchMethodException e) {
+                                log.debug("No default constructor for {}", fieldType.getName());
+                            } catch (IllegalAccessException | SecurityException e) {
+                                log.debug("Cannot access constructor for {}: {}", fieldType.getName(), e.getMessage());
+                            }
+                        }
+                    } else {
+                        // If field already has a value but it's a complex object,
+                        // we might want to process its fields too
+                        Object fieldValue = field.get(o);
+                        Class<?> fieldType = field.getType();
+
+                        if (fieldValue != null && shouldInstantiateClass(fieldType)) {
+                            instantiateDataItem(fieldValue);
+                        }
+                    }
+                } catch (IllegalAccessException e) {
+                    log.warn("Cannot access field {} in class {}: {}",
+                            field.getName(), o.getClass().getName(), e.getMessage());
+                } catch (Exception e) {
+                    log.warn("Error instantiating field {} in class {}: {}",
+                            field.getName(), o.getClass().getName(), e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error instantiating data item {}: {}", o.getClass().getName(), e.getMessage());
+        } finally {
+            // Clean up the thread local if this is the top-level call
+            if (processedObjects.get().size() == 1) {
+                processedObjects.remove();
+            }
+        }
+    }
+
+    /**
+     * Instantiates items for a list field based on its generic type
+     *
+     * @param field The field representing the list
+     * @param list The list to populate
+     */
+    private static void instantiateList(Field field, List<Object> list) {
+        try {
+            ParameterizedType listType = (ParameterizedType) field.getGenericType();
+            Type[] typeArguments = listType.getActualTypeArguments();
+
+            if (typeArguments.length > 0 && typeArguments[0] instanceof Class) {
+                Class<?> itemClass = (Class<?>) typeArguments[0];
+
+                if (shouldInstantiateClass(itemClass)) {
+                    try {
+                        Constructor<?> constructor = itemClass.getDeclaredConstructor();
+                        constructor.setAccessible(true);
+                        Object item = constructor.newInstance();
+                        instantiateDataItem(item);
+                        list.add(item);
+                    } catch (NoSuchMethodException e) {
+                        log.debug("No default constructor for list item class {}", itemClass.getName());
+                    } catch (SecurityException e) {
+                        log.debug("Security restriction instantiating {}: {}",
+                                itemClass.getName(), e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Could not instantiate list items for field {}: {}",
+                    field.getName(), e.getMessage());
+        }
+    }
+
+    /**
+     * Determines if a class should be instantiated
+     *
+     * @param clazz The class to check
+     * @return true if the class should be instantiated, false otherwise
+     */
+    private static boolean shouldInstantiateClass(Class<?> clazz) {
+        return !clazz.isPrimitive() &&
+                !clazz.getName().startsWith("java.") &&
+                !clazz.isInterface() &&
+                !clazz.isEnum() &&
+                !clazz.isAnnotation() &&
+                !Modifier.isAbstract(clazz.getModifiers());
+    }
+}
