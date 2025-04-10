@@ -1,0 +1,88 @@
+package com.demo;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Example of a standalone data class that doesn't extend CommonDataItem.
+ * This demonstrates how the reflection-based instantiation would work on any class.
+ */
+public class StandaloneDataClass {
+
+    @JsonProperty("reportId")
+    private String reportId;
+
+    @JsonProperty("submissionDate")
+    private String submissionDate;
+
+    @JsonProperty("reportData")
+    private List<DataRow> reportData;
+
+    @JsonProperty("metadata")
+    private Map<String, String> metadata;
+
+    @JsonProperty("calculatedFields")
+    private CalculatedValues calculatedFields;
+
+    @JsonIgnore
+    private String internalProcessingId;
+
+    // Private method
+    private void validateData() {
+        // Validation logic would go here
+    }
+
+    // Nested class
+    public static class DataRow {
+        @JsonProperty("rowId")
+        private String rowId;
+
+        @JsonProperty("values")
+        private List<String> values;
+
+        @JsonProperty("rowMetadata")
+        private RowMetadata rowMetadata;
+
+        // Constructor
+        public DataRow() {
+        }
+    }
+
+    // Another nested class
+    public static class RowMetadata {
+        @JsonProperty("isValid")
+        private Boolean isValid;
+
+        @JsonProperty("comments")
+        private List<String> comments;
+
+        // Constructor
+        public RowMetadata() {
+        }
+    }
+
+    // Yet another nested class
+    public static class CalculatedValues {
+        @JsonProperty("total")
+        private Double total;
+
+        @JsonProperty("average")
+        private Double average;
+
+        @JsonProperty("breakdown")
+        private Map<String, Double> breakdown;
+
+        // Constructor
+        public CalculatedValues() {
+        }
+    }
+
+    // Default constructor
+    public StandaloneDataClass() {
+    }
+}
