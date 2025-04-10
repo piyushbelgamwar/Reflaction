@@ -1,0 +1,7 @@
+module com.demo {
+    requires org.slf4j;
+    requires com.fasterxml.jackson.annotation;
+    opens com.demo.model;
+    exports com.demo;
+    exports com.demo.model;
+}
