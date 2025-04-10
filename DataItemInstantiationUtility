@@ -1,0 +1,99 @@
+package com.demo;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * This utility class generates default object structure with empty values
+ * which is utilized during retrieval of data items
+ */
+public class DataItemInstantiationUtility {
+
+    private static final Logger log = LoggerFactory.getLogger(DataItemInstantiationUtility.class);
+
+    public static void instantiateDataItem(Object o) throws IllegalAccessException {
+        if (o == null) {
+            return;
+        }
+
+        log.info("Instantiating data item for class: {}", o.getClass().getName());
+
+        // Skip processing for Java core classes
+        String className = o.getClass().getName();
+        if (className.startsWith("java.") || className.startsWith("javax.")) {
+            log.debug("Skipping Java core class: {}", className);
+            return;
+        }
+
+        Field[] fields = o.getClass().getDeclaredFields();
+
+        for (Field field : fields) {
+            field.setAccessible(true);
+            log.debug("Processing field: {}", field.getName());
+
+            if (field.get(o) == null) {
+                Type type = field.getType();
+
+                try {
+                    Class<?> clazz = (Class<?>) type;
+
+                    // Skip primitive types and Java core classes
+                    if (clazz.isPrimitive() || clazz.getName().startsWith("java.") ||
+                            clazz.getName().startsWith("javax.")) {
+                        if (clazz == String.class) {
+                            // For String fields, just set an empty string
+                            field.set(o, "");
+                        }
+                        continue;
+                    }
+
+                    Object instance = null;
+
+                    if (List.class.isAssignableFrom(clazz)) {
+                        log.debug("Field {} is a List, creating ArrayList", field.getName());
+                        instance = new ArrayList<>();
+                        instantiateList(field, instance);
+                    } else {
+                        log.debug("Creating new instance of {}", clazz.getName());
+                        instance = clazz.getDeclaredConstructor().newInstance();
+                    }
+
+                    field.set(o, instance);
+                    instantiateDataItem(instance);
+
+                } catch (ClassCastException e) {
+                    log.error("Error while initializing object - ClassCastException for field: {}", field.getName(), e);
+                } catch (ReflectiveOperationException e) {
+                    log.error("Error while initializing object - Reflection error for field: {}", field.getName(), e);
+                }
+            }
+        }
+    }
+
+    public static void instantiateList(Field field, Object instance) throws ReflectiveOperationException {
+        log.debug("Instantiating list for field: {}", field.getName());
+        ParameterizedType listType = (ParameterizedType) field.getGenericType();
+        Class<?> listClass = (Class<?>) listType.getActualTypeArguments()[0];
+
+        // Skip if the list contains Java core classes
+        if (listClass.getName().startsWith("java.") || listClass.getName().startsWith("javax.")) {
+            log.debug("Skipping list of Java core class: {}", listClass.getName());
+            return;
+        }
+
+        log.debug("List generic type is: {}", listClass.getName());
+        Object listTypeInstance = listClass.getDeclaredConstructor().newInstance();
+
+        instantiateDataItem(listTypeInstance);
+
+        List<Object> list = (List<Object>) instance;
+        list.add(listTypeInstance);
+        log.debug("Added new instance to list");
+    }
+}
