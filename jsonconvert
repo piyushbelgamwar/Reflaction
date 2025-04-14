@@ -1,1 +1,35 @@
 
+private String buildJsonData(FeedbackData data) {
+    Map<String, Object> jsonMap = new LinkedHashMap<>();
+
+    // Add experience (compulsory)
+    jsonMap.put("feedbackExperience", data.getFeedbackExperience());
+
+    // Add question/answers (optional)
+    List<Map<String, String>> questions = new ArrayList<>();
+    for (FeedBackQuestion q : data.getFeedbackStatements()) {
+        if (q.getQuestion() != null && q.getAnswer() != null) {
+            Map<String, String> qa = new HashMap<>();
+            qa.put("question", q.getQuestion());
+            qa.put("answer", q.getAnswer());
+            questions.add(qa);
+        }
+    }
+    jsonMap.put("questions", questions);
+
+    // Add other optional fields
+    if (data.getOtherFeedback() != null) {
+        jsonMap.put("otherFeedback", data.getOtherFeedback());
+    }
+    if (data.getConsent() != null) {
+        jsonMap.put("consent", data.getConsent());
+    }
+
+    try {
+        ObjectMapper mapper = new ObjectMapper();
+        return mapper.writeValueAsString(jsonMap);
+    } catch (JsonProcessingException e) {
+        LOGGER.error("Failed to create JSON for feedback data", e);
+        return "{}"; // fallback
+    }
+}
