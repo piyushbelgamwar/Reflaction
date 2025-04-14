@@ -1,0 +1,48 @@
+private Map<String, Object> getNamedParametersForFeedBack(FeedbackData data){
+    Map<String, Object> namedParameters = new HashMap<>();
+
+    namedParameters.put(Constants.FIRM_REFERENCE_NUMBER, data.getFirmReferenceNumber());
+    namedParameters.put(Constants.FIRM_NAME_FEEDBACK, data.getFirmName());
+    namedParameters.put(Constants.HANDBOOK_REFERENCE_NO, data.getHandBookReference());
+    namedParameters.put(Constants.FIRM_DATA_ITEM_NAME, data.getFirmDataItemName());
+
+    namedParameters.put(Constants.START_DATE, data.getReportingPeriodStartDate());
+    namedParameters.put(Constants.END_DATE, data.getReportingPeriodEndDate());
+    namedParameters.put(Constants.DUE_DATE, data.getSubmissionDueDate());
+    namedParameters.put(Constants.COPY_NUMBER, data.getCopyNumber());
+    namedParameters.put(Constants.FIRM_DATA_ITEM_ID, data.getFirmDataItemId());
+    namedParameters.put(Constants.USER_NAME, data.getUserName());
+    namedParameters.put(Constants.SCHEDULE_DATA_ITEM_ID, data.getScheduleDataItemId());
+    namedParameters.put(Constants.FEEDBACK_DATA, buildJsonData(data));
+    namedParameters.put(Constants.REPORT_ID, data.getReportId());
+
+    return namedParameters;
+}
+
+@Override
+public Integer insertFeedBackData(FeedbackData feedbackData, RequestContext requestContext, FirmDataItem firmDataItem, AifDataItem aifDataItem) {
+    Map<String, Object> namedParameters = this.getNamedParametersForFeedBack(feedbackData);
+    StringBuilder query = new StringBuilder();
+    query.append(Constants.INSERT_INTO);
+    query.append(env.getProperty(schemaName)).append(".").append(env.getProperty(feedBackDetails));
+
+    query.append(" ( FIRM_REFERENCE_NO, FIRM_NAME, HANDBOOK_REF_NO, FIRM_DATA_ITEM_NAME, REPORTING_PERIOD_START,");
+    query.append("  REPORTING_PERIOD_END, SUBMISSION_DUE_DT, COPY_NO,");
+    query.append("  FIRM_DATA_ITEM_ID, USERNAME, REPORT_ID, SCHEDULE_DATA_ITEM_ID, FEEDBACK_DATA");
+    query.append("  ) VALUES ( ");
+    query.append(" :FIRM_REFERENCE_NUMBER, :FIRM_NAME_FEEDBACK, :HANDBOOK_REF_NO, :FIRM_DATA_ITEM_NAME, :START_DATE, ");
+    query.append(" :END_DATE, :DUE_DATE, :COPY_NUMBER, :FIRM_DATA_ITEM_ID, ");
+    query.append(" :USER_NAME, :REPORT_ID, :SCHEDULE_DATA_ITEM_ID, :FEEDBACK_DATA) ");
+
+    LOGGER.info("feedback details insertion query: {}", query.toString());
+    int rowsAffected = -1;
+    try {
+        rowsAffected = namedParameterJdbcTemplate.update(query.toString(), namedParameters);
+        LOGGER.info("feedback details rows affected: {}", rowsAffected);
+        insertAuditRecordForFeedback(feedbackData, requestContext, firmDataItem, aifDataItem);
+    } catch (Exception e) {
+        LOGGER.error("DB insertion for feedbackData is failed {}", ExceptionUtils.getStackTrace(e));
+    }
+
+    return rowsAffected;
+}
