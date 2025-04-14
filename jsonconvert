@@ -33,3 +33,31 @@ private String buildJsonData(FeedbackData data) {
         return "{}"; // fallback
     }
 }
+
+
+-------------------------------------------------------------------------------------------------
+
+UPDATE feedback_table
+SET feedback_data = JSON_OBJECT(
+    'feedbackExperience', FEEDBACK_EXP,
+    'questions', JSON_ARRAY(
+        IF(QUES_1 IS NOT NULL AND QUES_1 != '', JSON_OBJECT('question', 'Q1', 'answer', QUES_1), NULL),
+        IF(QUES_2 IS NOT NULL AND QUES_2 != '', JSON_OBJECT('question', 'Q2', 'answer', QUES_2), NULL),
+        IF(QUES_3 IS NOT NULL AND QUES_3 != '', JSON_OBJECT('question', 'Q3', 'answer', QUES_3), NULL),
+        IF(QUES_4 IS NOT NULL AND QUES_4 != '', JSON_OBJECT('question', 'Q4', 'answer', QUES_4), NULL),
+        IF(QUES_5 IS NOT NULL AND QUES_5 != '', JSON_OBJECT('question', 'Q5', 'answer', QUES_5), NULL),
+        IF(QUES_6 IS NOT NULL AND QUES_6 != '', JSON_OBJECT('question', 'Q6', 'answer', QUES_6), NULL)
+    ),
+    'otherFeedback', IF(OTHER_FEEDBACK IS NOT NULL AND OTHER_FEEDBACK != '', OTHER_FEEDBACK, NULL),
+    'consent', IF(CONSENT IS NOT NULL AND CONSENT != '', CONSENT, NULL)
+)
+WHERE FEEDBACK_EXP IS NOT NULL;
+
+
+-----------------------------------------------------------------------------------------------------
+
+
+SELECT FEEDBACK_ID, feedback_data
+FROM feedback_table
+WHERE feedback_data IS NOT NULL
+LIMIT 10;
