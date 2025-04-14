@@ -1,0 +1,156 @@
+@Test
+public void insertFeedBackDataSuccessTest() {
+    // Setup test data
+    FeedbackData feedbackData = new FeedbackData();
+    feedbackData.setFirmReferenceNumber(123456);
+    feedbackData.setFirmName("Test Firm");
+    feedbackData.setHandBookReference("HANDBOOK123");
+    feedbackData.setFirmDataItemName("Test Data Item");
+    feedbackData.setReportingPeriodStartDate("2023-01-01");
+    feedbackData.setReportingPeriodEndDate("2023-12-31");
+    feedbackData.setSubmissionDueDate("2024-01-31");
+    feedbackData.setCopyNumber(1);
+    feedbackData.setFirmDataItemId(98765L);
+    feedbackData.setUserName("testuser");
+    feedbackData.setScheduleDataItemId(12345L);
+    feedbackData.setReportId(5678);
+    feedbackData.setFeedbackExperience("Good");
+    
+    List<FeedBackQuestion> questions = new ArrayList<>();
+    FeedBackQuestion q1 = new FeedBackQuestion();
+    q1.setQuestion("Q1");
+    q1.setAnswer("Answer1");
+    questions.add(q1);
+    feedbackData.setFeedbackStatements(questions);
+    
+    RequestContext requestContext = new RequestContext();
+    requestContext.setUserName("testuser");
+    FirmDataItem firmDataItem = new FirmDataItem();
+    AifDataItem aifDataItem = new AifDataItem();
+    
+    // Mock the database update operation
+    when(namedParameterJdbcTemplate.update(anyString(), anyMap())).thenReturn(1);
+    
+    // Spy the insertAuditRecordForFeedback method to avoid actually calling it
+    doNothing().when(firmDataItemDaoImpl).insertAuditRecordForFeedback(any(), any(), any(), any());
+    
+    // Test the method
+    int result = firmDataItemDaoImpl.insertFeedBackData(feedbackData, requestContext, firmDataItem, aifDataItem);
+    
+    // Verify results
+    Assert.assertEquals(1, result);
+    
+    // Verify the update was called with a query containing the right columns
+    ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
+    verify(namedParameterJdbcTemplate).update(queryCaptor.capture(), anyMap());
+    
+    String capturedQuery = queryCaptor.getValue();
+    
+    // Verify query structure (check that it contains the right column fields without QUES_* fields)
+    Assert.assertTrue(capturedQuery.contains("FIRM_REFERENCE_NO"));
+    Assert.assertTrue(capturedQuery.contains("FIRM_NAME"));
+    Assert.assertTrue(capturedQuery.contains("HANDBOOK_REF_NO"));
+    Assert.assertTrue(capturedQuery.contains("FIRM_DATA_ITEM_NAME"));
+    Assert.assertTrue(capturedQuery.contains("REPORTING_PERIOD_START"));
+    Assert.assertTrue(capturedQuery.contains("REPORTING_PERIOD_END"));
+    Assert.assertTrue(capturedQuery.contains("SUBMISSION_DUE_DT"));
+    Assert.assertTrue(capturedQuery.contains("COPY_NO"));
+    Assert.assertTrue(capturedQuery.contains("FIRM_DATA_ITEM_ID"));
+    Assert.assertTrue(capturedQuery.contains("USERNAME"));
+    Assert.assertTrue(capturedQuery.contains("REPORT_ID"));
+    Assert.assertTrue(capturedQuery.contains("SCHEDULE_DATA_ITEM_ID"));
+    Assert.assertTrue(capturedQuery.contains("FEEDBACK_DATA"));
+    
+    // Verify the removed fields are NOT in the query
+    Assert.assertFalse(capturedQuery.contains("QUES_1"));
+    Assert.assertFalse(capturedQuery.contains("QUES_2"));
+    Assert.assertFalse(capturedQuery.contains("QUES_3"));
+    Assert.assertFalse(capturedQuery.contains("QUES_4"));
+    Assert.assertFalse(capturedQuery.contains("QUES_5"));
+    Assert.assertFalse(capturedQuery.contains("QUES_6"));
+    Assert.assertFalse(capturedQuery.contains("FEEDBACK_EXP"));
+    Assert.assertFalse(capturedQuery.contains("OTHER_FEEDBACK"));
+    Assert.assertFalse(capturedQuery.contains("CONSENT"));
+    
+    // Verify audit record was created
+    verify(firmDataItemDaoImpl).insertAuditRecordForFeedback(eq(feedbackData), eq(requestContext), eq(firmDataItem), eq(aifDataItem));
+}
+
+@Test
+public void insertFeedBackDataFailureTest() {
+    // Setup test data
+    FeedbackData feedbackData = new FeedbackData();
+    feedbackData.setFirmReferenceNumber(123456);
+    feedbackData.setFirmName("Test Firm");
+    feedbackData.setHandBookReference("HANDBOOK123");
+    feedbackData.setFirmDataItemName("Test Data Item");
+    
+    RequestContext requestContext = new RequestContext();
+    FirmDataItem firmDataItem = new FirmDataItem();
+    AifDataItem aifDataItem = new AifDataItem();
+    
+    // Mock the database update operation to throw an exception
+    when(namedParameterJdbcTemplate.update(anyString(), anyMap())).thenThrow(new RuntimeException("Database error"));
+    
+    // Test the method
+    int result = firmDataItemDaoImpl.insertFeedBackData(feedbackData, requestContext, firmDataItem, aifDataItem);
+    
+    // Verify results
+    Assert.assertEquals(-1, result);
+    
+    // Verify the update method was called
+    verify(namedParameterJdbcTemplate).update(anyString(), anyMap());
+    
+    // Verify audit record was not created due to the exception
+    verify(firmDataItemDaoImpl, never()).insertAuditRecordForFeedback(any(), any(), any(), any());
+}
+
+@Test
+public void insertFeedBackDataJsonSerializationTest() {
+    // Setup test data
+    FeedbackData feedbackData = new FeedbackData();
+    feedbackData.setFirmReferenceNumber(123456);
+    feedbackData.setFirmName("Test Firm");
+    feedbackData.setHandBookReference("HANDBOOK123");
+    feedbackData.setFirmDataItemName("Test Data Item");
+    feedbackData.setFeedbackExperience("Excellent");
+    
+    List<FeedBackQuestion> questions = new ArrayList<>();
+    FeedBackQuestion q1 = new FeedBackQuestion();
+    q1.setQuestion("Q1");
+    q1.setAnswer("Answer1");
+    questions.add(q1);
+    feedbackData.setFeedbackStatements(questions);
+    
+    RequestContext requestContext = new RequestContext();
+    FirmDataItem firmDataItem = new FirmDataItem();
+    AifDataItem aifDataItem = new AifDataItem();
+    
+    // Mock the database update operation
+    when(namedParameterJdbcTemplate.update(anyString(), anyMap())).thenReturn(1);
+    
+    // Capture the parameters map to verify the JSON serialization
+    ArgumentCaptor<Map<String, Object>> paramsCaptor = ArgumentCaptor.forClass(Map.class);
+    
+    // Test the method
+    int result = firmDataItemDaoImpl.insertFeedBackData(feedbackData, requestContext, firmDataItem, aifDataItem);
+    
+    // Verify results
+    Assert.assertEquals(1, result);
+    
+    // Verify the parameters
+    verify(namedParameterJdbcTemplate).update(anyString(), paramsCaptor.capture());
+    
+    Map<String, Object> capturedParams = paramsCaptor.getValue();
+    
+    // Verify the JSON data contains all required information
+    String jsonData = (String) capturedParams.get(Constants.FEEDBACK_DATA);
+    Assert.assertNotNull(jsonData);
+    
+    // Verify the JSON contains feedback experience and questions
+    Assert.assertTrue(jsonData.contains("feedbackExperience"));
+    Assert.assertTrue(jsonData.contains("Excellent"));
+    Assert.assertTrue(jsonData.contains("questions"));
+    Assert.assertTrue(jsonData.contains("Q1"));
+    Assert.assertTrue(jsonData.contains("Answer1"));
+}
