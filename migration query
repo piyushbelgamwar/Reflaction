@@ -1,0 +1,99 @@
+-- Step 1: Create a backup of the original table before making any changes
+CREATE TABLE feedback_table_backup AS SELECT * FROM feedback_table;
+
+-- Step 2: Add the new column to the existing table
+ALTER TABLE feedback_table ADD COLUMN feedback_data MEDIUMTEXT;
+
+-- Step 3: Update the new column with consolidated feedback data in JSON format
+-- Using the exact format requested with questions array and consent value
+-- Handling NULL values by converting them to empty strings ("")
+UPDATE feedback_table
+SET feedback_data = JSON_OBJECT(
+    'questions', JSON_ARRAY(
+        JSON_OBJECT(
+            'question', CONCAT('How would you rate your experience of completing ', HANDBOOK_REF_NO, '?'),
+            'answer', IFNULL(NULLIF(TRIM(FEEDBACK_EXP), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('It is clear why the FCA collects the data for ', HANDBOOK_REF_NO, '.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_1), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('The questions make it clear what data is needed for ', HANDBOOK_REF_NO, '.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_2), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('The guidance available helps me complete ', HANDBOOK_REF_NO, '.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_3), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('The ', HANDBOOK_REF_NO, ' form is easy to fill in and submit.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_4), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('The time given to prepare and submit ', HANDBOOK_REF_NO, ' is enough.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_5), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('The costs incurred to prepare and submit ', HANDBOOK_REF_NO, ' are proportionate.'),
+            'answer', IFNULL(NULLIF(TRIM(QUES_6), ''), ' ')
+        ),
+        JSON_OBJECT(
+            'question', CONCAT('Is there any other feedback you would like to provide about ', HANDBOOK_REF_NO, '?'),
+            'answer', IFNULL(NULLIF(TRIM(OTHER_FEEDBACK), ''), ' ')
+        )
+    ),
+    'consent', IFNULL(NULLIF(TRIM(CONSENT), ''), ' ')
+);
+
+-- Step 4: Verify the data migration was successful before removing columns
+-- Run a SELECT query to check if the data was properly migrated:
+-- SELECT feedback_id, feedback_data FROM feedback_table LIMIT 10;
+
+-- Step 5: Create a new table with only the columns you want to keep
+CREATE TABLE feedback_table_new (
+    CONSENT VARCHAR(255),
+    FEEDBACK_EXP VARCHAR(255),
+    FEEDBACK_ID BIGINT,
+    FEEDBACK_SENT_ON DATE,
+    FIRM_NAME VARCHAR(255),
+    REPORT_ID BIGINT,
+    USERNAME VARCHAR(255),
+    feedback_data MEDIUMTEXT
+);
+
+-- Step 6: Copy data from the original table to the new table
+INSERT INTO feedback_table_new (
+    CONSENT,
+    FEEDBACK_EXP,
+    FEEDBACK_ID,
+    FEEDBACK_SENT_ON,
+    FIRM_NAME,
+    REPORT_ID,
+    USERNAME,
+    feedback_data
+)
+SELECT 
+    CONSENT,
+    FEEDBACK_EXP,
+    FEEDBACK_ID,
+    FEEDBACK_SENT_ON,
+    FIRM_NAME,
+    REPORT_ID,
+    USERNAME,
+    feedback_data
+FROM feedback_table;
+
+-- Step 7: Rename tables to complete the migration
+-- RENAME TABLE feedback_table TO feedback_table_old;
+-- RENAME TABLE feedback_table_new TO feedback_table;
+
+-- This commented section should only be executed after verifying the migration was successful
+-- and you have a backup of the original table.
+
+-- Step 8: Add any necessary indexes or constraints to the new table
+-- ALTER TABLE feedback_table ADD PRIMARY KEY (FEEDBACK_ID);
+-- Add other indexes as needed
+
+-- Step 9: After verifying everything is working correctly, you can drop the old table
+-- DROP TABLE feedback_table_old;
