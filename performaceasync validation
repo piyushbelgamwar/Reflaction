@@ -1,0 +1,305 @@
+public ValidationErrorResponse performSchemaValidation(InputStream inputStream, DataProcessingInfo dpInfo) {
+    // Determine which dataitem version we're working with
+    String dataItemWithVersion;
+    if (dpInfo.getFilePath() == null) {
+        dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+    } else {
+        dataItemWithVersion = dpInfo.getFilePath();
+    }
+    
+    LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+    
+    // Check if the dataitem version is one of the special cases that require whitespace validation
+    if (dataItemWithVersion != null && 
+        (dataItemWithVersion.contains("rep026a") || 
+         dataItemWithVersion.contains("rep026b") || 
+         dataItemWithVersion.contains("rep026c"))) {
+        
+        LOGGER.info("Using method 1 with whitespace validation for {}", dataItemWithVersion);
+        return performAsyncSchemaValidationWithWhitespace(inputStream, dpInfo);
+    } else {
+        LOGGER.info("Using method 2 for {}", dataItemWithVersion);
+        return performAsyncSchemaValidationStandard(inputStream, dpInfo);
+    }
+}
+
+// Method 1: With whitespace validation
+private ValidationErrorResponse performAsyncSchemaValidationWithWhitespace(InputStream inputStream, DataProcessingInfo dpInfo) { 
+    List<ValidationError> validationErrorsList = new ArrayList<>(); 
+
+    LOGGER.info("performAsyncSchemaValidationWithWhitespace is called"); 
+
+    // First, check if the input stream is null 
+    if (inputStream == null) { 
+        ValidationError validationError = new ValidationError(); 
+        validationError.setType("Schema"); 
+        validationError.setDescription("No XML content provided - input stream is null"); 
+        validationError.setElement("N/A"); 
+        validationError.setElementRef("N/A"); 
+        validationErrorsList.add(validationError); 
+        ValidationErrorResponse response = new ValidationErrorResponse(); 
+        response.setValidationErrors(validationErrorsList); 
+        return response; 
+    } 
+
+    // For very large files, we'll use a temporary file to avoid memory issues 
+    File tempFile = null; 
+    try { 
+        // Create a temporary file 
+        tempFile = File.createTempFile("validation-", ".xml"); 
+        tempFile.deleteOnExit(); 
+
+        // Copy the input stream to the temporary file 
+        try (FileOutputStream fos = new FileOutputStream(tempFile)) { 
+            byte[] buffer = new byte[8192]; 
+            int bytesRead; 
+            while ((bytesRead = inputStream.read(buffer)) != -1) { 
+                fos.write(buffer, 0, bytesRead); 
+            } 
+        } 
+
+        // Check for whitespace-only elements with a fresh stream 
+        try (FileInputStream whitespaceCheckStream = new FileInputStream(tempFile)) { 
+            // Use the enhanced version that returns a list of errors 
+            List<ValidationError> whitespaceErrors = detectWhitespaceOnlyElements(whitespaceCheckStream); 
+            validationErrorsList.addAll(whitespaceErrors); 
+        } 
+
+        // Continue with Saxon validation using another fresh stream 
+        String dataItemWithVersion; 
+        if (dpInfo.getFilePath() == null) { 
+            dataItemWithVersion = this.dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo); 
+        } else { 
+            dataItemWithVersion = dpInfo.getFilePath(); 
+        } 
+
+        LOGGER.info("Data Item Version is {}", dataItemWithVersion); 
+
+        try (FileInputStream validationStream = new FileInputStream(tempFile)) { 
+            System.setProperty("javax.xml.transform.TransformerFactory", "com.saxonica.config.EnterpriseTransformerFactory"); 
+            TransformerFactory transformerFactory = CommonUtility.getTransformerFactory(); 
+            String stringSchemaFile = this.dataItemVersionService.getStringFileNameByVersionAndExtension(dataItemWithVersion, this.schemaFileSuffix, dpInfo); 
+            LOGGER.info("stringSchemaFile = {}", stringSchemaFile); 
+            StreamSource specific = new StreamSource(this.getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm()); 
+            ((EnterpriseTransformerFactory)transformerFactory).addSchema(specific); 
+            Transformer trans = transformerFactory.newTransformer(); 
+            StreamSource source = new StreamSource(validationStream); 
+            SAXResult sink = new SAXResult(new DefaultHandler()); 
+            trans.setErrorListener(new SchemaErrorListener(validationErrorsList, dpInfo)); 
+            trans.transform(source, sink); 
+        } 
+
+    } catch (Exception e) { 
+        LOGGER.error("Error Processing Schema Validation", e); 
+        throw new SchemaValidationException("Error in schema validation", e); 
+    } finally { 
+        // Clean up the temporary file 
+        if (tempFile != null && tempFile.exists()) { 
+            try { 
+                tempFile.delete(); 
+            } catch (Exception e) { 
+                LOGGER.warn("Failed to delete temporary file: {}", tempFile.getAbsolutePath(), e); 
+            } 
+        } 
+    } 
+
+    ValidationErrorResponse response = new ValidationErrorResponse(); 
+    if (!validationErrorsList.isEmpty()) { 
+        response.setValidationErrors(validationErrorsList); 
+    } 
+    return response; 
+}
+
+// Method 2: Standard validation without whitespace check
+private ValidationErrorResponse performAsyncSchemaValidationStandard(InputStream inputStream, DataProcessingInfo dpInfo) {
+    List<ValidationError> validationErrorsList = new ArrayList<>();
+
+    // Get schema file specific to dataItem
+    String dataItemWithVersion;
+    if (dpInfo.getFilePath() == null) {
+        dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+    } else {
+        dataItemWithVersion = dpInfo.getFilePath();
+    }
+
+    LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+
+    // Validate generated xml against dataItem specific schema / XSD and return validation errors, if any
+    try {
+        System.setProperty("javax.xml.transform.TransformerFactory",
+                "com.saxonica.config.EnterpriseTransformerFactory");
+        TransformerFactory transformerFactory = CommonUtility.getTransformerFactory();
+
+        String stringSchemaFile = dataItemVersionService.getStringFileNameByVersionAndExtension(dataItemWithVersion, schemaFileSuffix, dpInfo);
+        LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+
+        StreamSource specific = new StreamSource(getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
+        ((EnterpriseTransformerFactory) transformerFactory).addSchema(specific);
+
+        Transformer trans = transformerFactory.newTransformer();
+
+        StreamSource source = new StreamSource(inputStream);
+        SAXResult sink = new SAXResult(new DefaultHandler());
+        trans.setErrorListener(new SchemaErrorListener(validationErrorsList, dpInfo));
+        trans.transform(source, sink);
+
+    } catch (Exception e) {
+        LOGGER.error("Error Processing Schema Validation ", e);
+        throw new SchemaValidationException("Error in schema validation", e);
+    }
+    
+    if (!validationErrorsList.isEmpty()) {
+        return new ValidationErrorResponse(validationErrorsList);
+    }
+    
+    LOGGER.info("Schema level validation completed");
+    return null;
+}
+
+// The detectWhitespaceOnlyElements method remains unchanged
+private List<ValidationError> detectWhitespaceOnlyElements(InputStream inputStream) {
+    final List<ValidationError> whitespaceErrors = new ArrayList<>();
+    LOGGER.info("detectWhitespaceOnlyElements get called");
+    try {
+        SAXParserFactory factory = SAXParserFactory.newInstance();
+        factory.setFeature("http://xml.org/sax/features/use-entity-resolver2", true);
+        factory.setNamespaceAware(true);
+
+        SAXParser parser = factory.newSAXParser();
+
+        DefaultHandler handler = new DefaultHandler() {
+            private Locator locator;
+            private boolean inElement = false;
+            private String currentElement = null;
+            private boolean hasOnlyWhitespace = false;
+            private boolean hasContent = false;
+            private Stack<String> elementStack = new Stack<>();
+            private Map<String, Integer> elementLineNumbers = new HashMap<>();
+            private Map<String, Integer> elementCounts = new HashMap<>();
+
+            @Override
+            public void setDocumentLocator(Locator locator) {
+                this.locator = locator;
+            }
+
+            @Override
+            public void startElement(String uri, String localName, String qName, Attributes attributes) {
+                // Keep track of element count for the bracketed notation
+                String parentPath = getCurrentPath();
+                if (!parentPath.isEmpty()) {
+                    elementCounts.put(parentPath + "." + qName,
+                            elementCounts.getOrDefault(parentPath + "." + qName, 0) + 1);
+                }
+
+                elementStack.push(qName);
+                inElement = true;
+                currentElement = qName;
+                hasOnlyWhitespace = false;
+                hasContent = false;
+
+                // Store the line number
+                elementLineNumbers.put(getCurrentPath(), locator.getLineNumber());
+            }
+
+            @Override
+            public void characters(char[] ch, int start, int length) {
+                if (inElement) {
+                    String content = new String(ch, start, length);
+                    if (content.length() > 0) {
+                        if (content.trim().isEmpty()) {
+                            hasOnlyWhitespace = true;
+                        } else {
+                            hasContent = true;
+                        }
+                    }
+                }
+            }
+
+            @Override
+            public void endElement(String uri, String localName, String qName) {
+                if (inElement && hasOnlyWhitespace && !hasContent) {
+                    String path = getCurrentPath();
+                    int lineNumber = elementLineNumbers.getOrDefault(path, -1);
+
+                    // Format the element path in the desired format with [1] indexes
+                    String formattedElementPath = formatElementPath(path);
+
+                    ValidationError error = new ValidationError();
+                    // Set type as constant "Schema"
+                    error.setType("Schema");
+
+                    // Set element to the complete path where it happened
+                    error.setElement(formattedElementPath);
+
+                    // Set elementRef to the line number
+                    error.setElementRef(String.valueOf(lineNumber)+"A");
+
+                    // Set description to constant message
+                    error.setDescription("This field must be completed .");
+
+                    whitespaceErrors.add(error);
+
+                    LOGGER.info("Found element with only whitespace: {} at line {} - Path: {}",
+                            qName, lineNumber, formattedElementPath);
+                }
+
+                inElement = false;
+                currentElement = null;
+                elementStack.pop();
+            }
+
+            private String getCurrentPath() {
+                if (elementStack.isEmpty()) {
+                    return "";
+                }
+                StringBuilder path = new StringBuilder();
+                for (String element : elementStack) {
+                    if (path.length() > 0) {
+                        path.append(".");
+                    }
+                    path.append(element);
+                }
+                return path.toString();
+            }
+
+            private String formatElementPath(String path) {
+                // Split the path into elements
+                String[] elements = path.split("\\.");
+                StringBuilder formattedPath = new StringBuilder();
+
+                // Keep track of partial paths to look up element count
+                StringBuilder currentPath = new StringBuilder();
+
+                for (int i = 0; i < elements.length; i++) {
+                    if (i > 0) {
+                        currentPath.append(".");
+                    }
+                    currentPath.append(elements[i]);
+
+                    if (formattedPath.length() > 0) {
+                        formattedPath.append(".");
+                    }
+                    formattedPath.append(elements[i]);
+
+                    // Add count in brackets - using 1 as default for your format
+                    formattedPath.append("[1]");
+                }
+
+                return formattedPath.toString();
+            }
+        };
+
+        parser.parse(new InputSource(inputStream), handler);
+        return whitespaceErrors;
+
+    } catch (Exception e) {
+        LOGGER.error("Error checking for whitespace-only elements", e);
+        ValidationError error = new ValidationError();
+        error.setType("Schema");
+        error.setElement("Document");
+        error.setElementRef("N/A");
+        error.setDescription("Error checking for whitespace-only elements: " + e.getMessage());
+        whitespaceErrors.add(error);
+        return whitespaceErrors;
+    }
+}
