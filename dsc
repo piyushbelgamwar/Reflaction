@@ -1,24 +1,24 @@
 import java.io.*;
 import javax.xml.stream.*;
-import java.util.regex.Pattern;
 
 /**
- * Utility class for processing XML files by removing spaces between tags.
- * Designed to handle XML files up to 200MB efficiently with streaming.
+ * XMLSpaceRemover - A utility for removing whitespace between XML tags
+ * Designed to handle XML files up to 200MB efficiently
+ * Input and output are both handled as InputStreams
  */
 public class XMLSpaceRemover {
 
     private static final int BUFFER_SIZE = 8192;
 
     /**
-     * Removes spaces between XML tags using efficient streaming approach.
-     * Example: "<test>      </test>" becomes "<test></test>"
+     * Universal method to process XML by removing spaces between tags.
+     * Takes an InputStream as input and returns an InputStream as output.
      *
      * @param inputStream the input XML as an InputStream
      * @return an InputStream containing the processed XML
      * @throws IOException if an I/O error occurs
      */
-    public static InputStream removeSpacesBetweenTags(InputStream inputStream) throws IOException {
+    public static InputStream processXML(InputStream inputStream) throws IOException {
         if (inputStream == null) {
             throw new IllegalArgumentException("Input stream cannot be null");
         }
@@ -29,6 +29,7 @@ public class XMLSpaceRemover {
         try (BufferedOutputStream outputStream = new BufferedOutputStream(
                 new FileOutputStream(tempOutputFile), BUFFER_SIZE)) {
             
+            // Process the XML using StAX parser
             processXmlStream(inputStream, outputStream);
         } catch (XMLStreamException e) {
             throw new IOException("Error processing XML stream", e);
@@ -36,18 +37,6 @@ public class XMLSpaceRemover {
         
         // Return the processed content as an InputStream
         return new BufferedInputStream(new FileInputStream(tempOutputFile), BUFFER_SIZE);
-    }
-    
-    /**
-     * Universal method that can handle any XML processing with spaces between tags.
-     * This method is designed to efficiently process large XML files (up to 200MB).
-     *
-     * @param inputStream the input XML as an InputStream
-     * @return an InputStream containing the processed XML
-     * @throws IOException if an I/O error occurs
-     */
-    public static InputStream processXML(InputStream inputStream) throws IOException {
-        return removeSpacesBetweenTags(inputStream);
     }
 
     /**
@@ -61,25 +50,29 @@ public class XMLSpaceRemover {
     private static void processXmlStream(InputStream input, OutputStream output) 
             throws XMLStreamException, IOException {
         
+        // Configure XML input factory
         XMLInputFactory inputFactory = XMLInputFactory.newInstance();
         // Disable external entity resolution for security
         inputFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
         inputFactory.setProperty(XMLInputFactory.SUPPORT_DTD, Boolean.FALSE);
         
+        // Create XML reader and writer
         XMLStreamReader reader = inputFactory.createXMLStreamReader(input);
         XMLOutputFactory outputFactory = XMLOutputFactory.newInstance();
         XMLStreamWriter writer = outputFactory.createXMLStreamWriter(output);
         
-        // Track state to detect whitespace-only content
+        // Variables to track state
         String currentElement = null;
         StringBuilder contentBuffer = new StringBuilder();
-        boolean hasNonWhitespace = false;
+        boolean hasOnlyWhitespace = true;
         
+        // Process XML events
         while (reader.hasNext()) {
             int event = reader.next();
             
             switch (event) {
                 case XMLStreamConstants.START_DOCUMENT:
+                    // Write XML declaration
                     writer.writeStartDocument(reader.getEncoding(), reader.getVersion());
                     break;
                     
@@ -88,16 +81,20 @@ public class XMLSpaceRemover {
                     break;
                     
                 case XMLStreamConstants.START_ELEMENT:
-                    // If we were tracking content for a previous element, write it now
+                    // If we were tracking content for a previous element, process it
                     if (currentElement != null && contentBuffer.length() > 0) {
-                        if (hasNonWhitespace) {
+                        // Only write content if it's not just whitespace
+                        if (!hasOnlyWhitespace) {
                             writer.writeCharacters(contentBuffer.toString());
                         }
                         contentBuffer.setLength(0);
-                        hasNonWhitespace = false;
+                        hasOnlyWhitespace = true;
                     }
                     
+                    // Save current element name
                     currentElement = reader.getLocalName();
+                    
+                    // Write element start tag with prefix and namespace
                     writer.writeStartElement(reader.getPrefix(), reader.getLocalName(), 
                             reader.getNamespaceURI());
                     
@@ -117,18 +114,19 @@ public class XMLSpaceRemover {
                     break;
                     
                 case XMLStreamConstants.END_ELEMENT:
-                    // If we have content for the current element
+                    // Handle any content before closing the element
                     if (currentElement != null && currentElement.equals(reader.getLocalName())) {
                         if (contentBuffer.length() > 0) {
-                            // Only write content if it's not just whitespace
-                            if (hasNonWhitespace) {
+                            // Only write content if it contains non-whitespace characters
+                            if (!hasOnlyWhitespace) {
                                 writer.writeCharacters(contentBuffer.toString());
                             }
                             contentBuffer.setLength(0);
                         }
-                        hasNonWhitespace = false;
+                        hasOnlyWhitespace = true;
                     }
                     
+                    // Write element end tag
                     writer.writeEndElement();
                     currentElement = null;
                     break;
@@ -137,9 +135,10 @@ public class XMLSpaceRemover {
                     if (currentElement != null) {
                         String text = reader.getText();
                         contentBuffer.append(text);
-                        // Check if content has non-whitespace
-                        if (!hasNonWhitespace && !Pattern.matches("\\s*", text)) {
-                            hasNonWhitespace = true;
+                        
+                        // Check if content has non-whitespace characters
+                        if (hasOnlyWhitespace && text.trim().length() > 0) {
+                            hasOnlyWhitespace = false;
                         }
                     }
                     break;
@@ -170,54 +169,85 @@ public class XMLSpaceRemover {
         writer.close();
         reader.close();
     }
-
-    /**
-     * Example usage of the XML space remover utility.
-     */
-    public static void main(String[] args) {
-        try {
-            // Example XML with spaces between tags
-            String xml = "<root>\n  <test>      </test>\n  <another>content</another>\n</root>";
-            InputStream inputStream = new ByteArrayInputStream(xml.getBytes());
-            
-            // Process the XML
-            InputStream result = processXML(inputStream);
-            
-            // Print the result
-            BufferedReader reader = new BufferedReader(new InputStreamReader(result));
-            String line;
-            System.out.println("Processed XML:");
-            while ((line = reader.readLine()) != null) {
-                System.out.println(line);
-            }
-            
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
     
     /**
-     * Processes a large XML file from an input file path and saves the result to an output file path.
-     * Suitable for handling files up to 200MB.
-     * 
-     * @param inputFilePath path to the input XML file
-     * @param outputFilePath path where the processed XML will be saved
-     * @throws IOException if an I/O error occurs
+     * Main method for command-line usage or testing.
      */
-    public static void processLargeXmlFile(String inputFilePath, String outputFilePath) throws IOException {
-        try (InputStream inputStream = new BufferedInputStream(new FileInputStream(inputFilePath), BUFFER_SIZE);
-             OutputStream outputStream = new BufferedOutputStream(new FileOutputStream(outputFilePath), BUFFER_SIZE)) {
-            
-            InputStream processedStream = processXML(inputStream);
-            
-            // Transfer processed content to output file
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int bytesRead;
-            while ((bytesRead = processedStream.read(buffer)) != -1) {
-                outputStream.write(buffer, 0, bytesRead);
+    public static void main(String[] args) {
+        if (args.length == 2) {
+            // Process file from command line arguments
+            try {
+                String inputFile = args[0];
+                String outputFile = args[1];
+                System.out.println("Processing XML file: " + inputFile);
+                
+                // Example of using FileInputStream directly as you mentioned
+                FileInputStream fileInputStream = new FileInputStream(new File(inputFile));
+                InputStream processedStream = processXML(fileInputStream);
+                
+                // Save processed output to file
+                try (FileOutputStream fileOutputStream = new FileOutputStream(new File(outputFile))) {
+                    byte[] buffer = new byte[BUFFER_SIZE];
+                    int bytesRead;
+                    while ((bytesRead = processedStream.read(buffer)) != -1) {
+                        fileOutputStream.write(buffer, 0, bytesRead);
+                    }
+                }
+                
+                processedStream.close();
+                System.out.println("Processing completed successfully. Output saved to: " + outputFile);
+            } catch (IOException e) {
+                System.err.println("Error processing XML file: " + e.getMessage());
+                e.printStackTrace();
             }
-            
-            processedStream.close();
+        } else {
+            // Example showing FileInputStream usage with a sample file
+            try {
+                System.out.println("Example usage with FileInputStream:");
+                System.out.println("----------------------------------");
+                
+                // 1. Using FileInputStream as you described
+                String xmlFilePath = "example.xml";
+                System.out.println("Example code for your scenario:");
+                System.out.println("File xmlFile = new File(\"" + xmlFilePath + "\");");
+                System.out.println("FileInputStream fileInputStream = new FileInputStream(xmlFile);");
+                System.out.println("InputStream processedXml = XMLSpaceRemover.processXML(fileInputStream);");
+                System.out.println("// Now use processedXml as needed");
+                
+                // 2. Create an example XML file for demonstration
+                String exampleXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                             "<root>\n" +
+                             "  <BUID>  </BUID>\n" +
+                             "  <Postcode>      </Postcode>\n" +
+                             "  <Address>   </Address>\n" +
+                             "  <test>content</test>\n" +
+                             "</root>";
+                
+                // Write example file for testing
+                File tempFile = File.createTempFile("example_", ".xml");
+                tempFile.deleteOnExit();
+                try (FileWriter writer = new FileWriter(tempFile)) {
+                    writer.write(exampleXml);
+                }
+                
+                // 3. Process the file using FileInputStream
+                System.out.println("\nDemonstration with a temporary file:");
+                FileInputStream fis = new FileInputStream(tempFile);
+                InputStream processedStream = processXML(fis);
+                
+                // Print the result
+                System.out.println("Processed XML:");
+                BufferedReader reader = new BufferedReader(new InputStreamReader(processedStream));
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println(line);
+                }
+                
+                reader.close();
+                System.out.println("\nUsage: java XMLSpaceRemover <inputFile> <outputFile>");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 }
