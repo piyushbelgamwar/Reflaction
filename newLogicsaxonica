@@ -1,0 +1,466 @@
+package uk.org.fca.gabriel.common.validation.saxonicaparser;
+
+import com.saxonica.config.EnterpriseTransformerFactory;
+import datadog.trace.api.Trace;
+import net.sf.saxon.lib.Feature;
+import net.sf.saxon.lib.Validation;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.xml.sax.Attributes;
+import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
+import org.xml.sax.helpers.DefaultHandler;
+import uk.org.fca.gabriel.common.constants.Constants;
+import uk.org.fca.gabriel.common.domain.DataProcessingInfo;
+import uk.org.fca.gabriel.common.domain.ValidationError;
+import uk.org.fca.gabriel.common.domain.ValidationErrorResponse;
+import uk.org.fca.gabriel.common.service.DataItemVersionService;
+import uk.org.fca.gabriel.common.utility.CommonUtility;
+import uk.org.fca.gabriel.common.validation.XMLConverter;
+import uk.org.fca.gabriel.common.validation.XsdErrorHandler;
+import uk.org.fca.gabriel.common.validation.domain.ElementInfo;
+import uk.org.fca.gabriel.common.validation.domain.ElementResponse;
+import uk.org.fca.gabriel.common.validation.exceptions.SchemaValidationException;
+import uk.org.fca.gabriel.common.validation.saxonicaparser.helper.SchemaConstants;
+import uk.org.fca.gabriel.common.validation.saxonicaparser.helper.SchemaValidationErrorHelper;
+
+import javax.xml.parsers.SAXParser;
+import javax.xml.parsers.SAXParserFactory;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.sax.SAXResult;
+import javax.xml.transform.stream.StreamSource;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+@Service
+public class SaxonicaSchemaValidator {
+
+    @Value("${schema.file.suffix}")
+    private String schemaFileSuffix;
+
+    public static final Logger LOGGER = LoggerFactory.getLogger(SaxonicaSchemaValidator.class);
+
+    XMLConverter xmlConverter;
+    DataItemVersionService dataItemVersionService;
+
+    public SaxonicaSchemaValidator(DataItemVersionService dataItemVersionService, XMLConverter xmlConverter) {
+        this.dataItemVersionService = dataItemVersionService;
+        this.xmlConverter = xmlConverter;
+    }
+
+    public void setSchemaFileSuffix(String schemaFileSuffix) {
+        this.schemaFileSuffix = schemaFileSuffix;
+    }
+
+    /**
+     * Perform validation required steps: JSON/Object request
+     * 1. Get the versioned xsd w.r.t. data item request version
+     * 2. Convert java/json to (in memory )XML using JavaToXmlConverter.convertToXml(...)
+     * 3. Apply javax.xml.validation.Validator to validate against schema(xsd)
+     *
+     * @param dataItem
+     */
+    @Trace
+    public ValidationErrorResponse performValidation(Object dataItem, DataProcessingInfo dpInfo) {
+        LOGGER.info("Schema level validation for request {}", dataItem.getClass().getCanonicalName());
+        List<ValidationError> validationErrorsList = new ArrayList<>();
+
+        //1. Get schema file specific to dataItem
+        String dataItemWithVersion;
+        if (dpInfo.getFilePath() == null)
+            dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+        else
+            dataItemWithVersion = dpInfo.getFilePath();
+
+        LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+
+        //2. Convert POJO to XML using odysseus.staxon lib
+        Reader xmlContent = null;
+        try {
+            if (StringUtils.isNotEmpty(dpInfo.getXmlContent()) && StringUtils.isNotBlank(dpInfo.getXmlContent())) {
+                xmlContent = new InputStreamReader(new ByteArrayInputStream(dpInfo.getXmlContent().getBytes(StandardCharsets.UTF_8)));
+            } else {
+                xmlContent = xmlConverter.convertToXml(dataItem, dpInfo.getMode());
+            }
+        } catch(Exception e){
+            LOGGER.error("Error Processing Schema Validation ", e);
+        }
+
+        //3. Validate generated xml against dataItem specific schema / XSD and return validation errors, if any
+        try {
+            System.setProperty("javax.xml.transform.TransformerFactory",
+                    "com.saxonica.config.EnterpriseTransformerFactory");
+            TransformerFactory transformerFactory = CommonUtility.getTransformerFactory();
+
+            StreamSource common;
+            StreamSource specific;
+            String stringSchemaFile = dataItemVersionService.getStringFileNameByVersionAndExtension(dataItemWithVersion, schemaFileSuffix, dpInfo);
+            LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+            if(SchemaConstants.PSD_HANDBOOK_REF.contains(dpInfo.getHandbookReference()) && StringUtils.isNotEmpty(dpInfo.getCommonSchemaFilePath())){
+                specific = new StreamSource(getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
+                common = getFileFromResourceAsStream(dpInfo.getCommonSchemaFilePath());
+                ((EnterpriseTransformerFactory) transformerFactory).addSchema(common);
+                ((EnterpriseTransformerFactory) transformerFactory).addSchema(specific);
+            } else {
+                specific = new StreamSource(getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
+                ((EnterpriseTransformerFactory) transformerFactory).addSchema(specific);
+            }
+
+            Transformer trans = transformerFactory.newTransformer();
+
+            StreamSource source = new StreamSource(xmlContent);
+            SAXResult sink = new SAXResult(new DefaultHandler());
+            trans.setErrorListener(new SchemaErrorListener(validationErrorsList, dpInfo));
+            trans.transform(source, sink);
+
+        } catch (Exception e) {
+            LOGGER.error("Error Processing Schema Validation ", e);
+            throw new SchemaValidationException("Error in schema validation", e);
+        }
+        if (!validationErrorsList.isEmpty()) {
+            return new ValidationErrorResponse(validationErrorsList);
+        }
+        LOGGER.info("Schema level validation completed");
+        return null;
+    }
+
+    private StreamSource getFileFromResourceAsStream(String filename){
+        InputStream inputStream = getClass().getClassLoader().getResourceAsStream(filename);
+        return new StreamSource(inputStream);
+    }
+
+    public ValidationErrorResponse performAsyncSchemaValidation(InputStream inputStream, DataProcessingInfo dpInfo) {
+        // Determine which dataitem version we're working with
+        String dataItemWithVersion;
+        if (dpInfo.getFilePath() == null) {
+            dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+        } else {
+            dataItemWithVersion = dpInfo.getFilePath();
+        }
+
+        LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+
+        // Check if the dataitem version is one of the special cases that require whitespace validation
+        if (dataItemWithVersion != null &&
+                (dataItemWithVersion.toLowerCase().contains("rep026a") ||
+                        dataItemWithVersion.toLowerCase().contains("rep026b") ||
+                        dataItemWithVersion.toLowerCase().contains("rep026c"))) {
+
+            LOGGER.info("Using method with whitespace validation for {}", dataItemWithVersion);
+            return performAsyncSchemaValidationWithWhitespace(inputStream, dpInfo);
+        } else {
+            LOGGER.info("Using standard method for {}", dataItemWithVersion);
+            return performAsyncSchemaValidationStandard(inputStream, dpInfo);
+        }
+    }
+
+    // Enhanced whitespace validation that uses XSD line numbers
+    private ValidationErrorResponse performAsyncSchemaValidationWithWhitespace(InputStream inputStream, DataProcessingInfo dpInfo) {
+        List<ValidationError> validationErrorsList = new ArrayList<>();
+
+        LOGGER.info("performAsyncSchemaValidationWithWhitespace is called");
+
+        // First, check if the input stream is null
+        if (inputStream == null) {
+            ValidationError validationError = new ValidationError();
+            validationError.setType("Schema");
+            validationError.setDescription("No XML content provided - input stream is null");
+            validationError.setElement("N/A");
+            validationError.setElementRef("N/A");
+            validationErrorsList.add(validationError);
+            ValidationErrorResponse response = new ValidationErrorResponse();
+            response.setValidationErrors(validationErrorsList);
+            return response;
+        }
+
+        // For very large files, we'll use a temporary file to avoid memory issues
+        File tempFile = null;
+        try {
+            // Create a temporary file
+            tempFile = File.createTempFile("validation-", ".xml");
+            tempFile.deleteOnExit();
+
+            // Copy the input stream to the temporary file
+            try (FileOutputStream fos = new FileOutputStream(tempFile)) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    fos.write(buffer, 0, bytesRead);
+                }
+            }
+
+            // Get data item version information
+            String dataItemWithVersion;
+            if (dpInfo.getFilePath() == null) {
+                dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+            } else {
+                dataItemWithVersion = dpInfo.getFilePath();
+            }
+            LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+
+            // Create SchemaValidationErrorHelper for element-to-line-number mapping
+            SchemaValidationErrorHelper errorHelper = new SchemaValidationErrorHelper(dpInfo);
+
+            // Check for whitespace-only elements with a fresh stream
+            try (FileInputStream whitespaceCheckStream = new FileInputStream(tempFile)) {
+                // Use the enhanced whitespace detection that uses XSD line numbers
+                List<ValidationError> whitespaceErrors = detectWhitespaceOnlyElements(
+                        whitespaceCheckStream, errorHelper, dpInfo);
+                validationErrorsList.addAll(whitespaceErrors);
+            }
+
+            // Continue with Saxon validation using another fresh stream
+            try (FileInputStream validationStream = new FileInputStream(tempFile)) {
+                System.setProperty("javax.xml.transform.TransformerFactory", "com.saxonica.config.EnterpriseTransformerFactory");
+                TransformerFactory transformerFactory = CommonUtility.getTransformerFactory();
+                String stringSchemaFile = dataItemVersionService.getStringFileNameByVersionAndExtension(
+                        dataItemWithVersion, schemaFileSuffix, dpInfo);
+                LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+                
+                StreamSource specific = new StreamSource(getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
+                ((EnterpriseTransformerFactory)transformerFactory).addSchema(specific);
+                
+                Transformer trans = transformerFactory.newTransformer();
+                StreamSource source = new StreamSource(validationStream);
+                SAXResult sink = new SAXResult(new DefaultHandler());
+                trans.setErrorListener(new SchemaErrorListener(validationErrorsList, dpInfo));
+                trans.transform(source, sink);
+            }
+
+        } catch (Exception e) {
+            LOGGER.error("Error Processing Schema Validation", e);
+            throw new SchemaValidationException("Error in schema validation", e);
+        } finally {
+            // Clean up the temporary file
+            if (tempFile != null && tempFile.exists()) {
+                try {
+                    tempFile.delete();
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to delete temporary file: {}", tempFile.getAbsolutePath(), e);
+                }
+            }
+        }
+
+        ValidationErrorResponse response = new ValidationErrorResponse();
+        if (!validationErrorsList.isEmpty()) {
+            response.setValidationErrors(validationErrorsList);
+        }
+        return response;
+    }
+
+    // Standard validation without whitespace check
+    private ValidationErrorResponse performAsyncSchemaValidationStandard(InputStream inputStream, DataProcessingInfo dpInfo) {
+        List<ValidationError> validationErrorsList = new ArrayList<>();
+
+        // Get schema file specific to dataItem
+        String dataItemWithVersion;
+        if (dpInfo.getFilePath() == null) {
+            dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
+        } else {
+            dataItemWithVersion = dpInfo.getFilePath();
+        }
+
+        LOGGER.info("Data Item Version is {}", dataItemWithVersion);
+
+        // Validate generated xml against dataItem specific schema / XSD and return validation errors, if any
+        try {
+            System.setProperty("javax.xml.transform.TransformerFactory",
+                    "com.saxonica.config.EnterpriseTransformerFactory");
+            TransformerFactory transformerFactory = CommonUtility.getTransformerFactory();
+
+            String stringSchemaFile = dataItemVersionService.getStringFileNameByVersionAndExtension(
+                    dataItemWithVersion, schemaFileSuffix, dpInfo);
+            LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+
+            StreamSource specific = new StreamSource(getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
+            ((EnterpriseTransformerFactory) transformerFactory).addSchema(specific);
+
+            Transformer trans = transformerFactory.newTransformer();
+
+            StreamSource source = new StreamSource(inputStream);
+            SAXResult sink = new SAXResult(new DefaultHandler());
+            trans.setErrorListener(new SchemaErrorListener(validationErrorsList, dpInfo));
+            trans.transform(source, sink);
+
+        } catch (Exception e) {
+            LOGGER.error("Error Processing Schema Validation ", e);
+            throw new SchemaValidationException("Error in schema validation", e);
+        }
+
+        if (!validationErrorsList.isEmpty()) {
+            return new ValidationErrorResponse(validationErrorsList);
+        }
+
+        LOGGER.info("Schema level validation completed");
+        return null;
+    }
+
+    // Enhanced whitespace detection that uses XSD line numbers
+    private List<ValidationError> detectWhitespaceOnlyElements(
+            InputStream inputStream, 
+            SchemaValidationErrorHelper errorHelper,
+            DataProcessingInfo dpInfo) {
+            
+        final List<ValidationError> whitespaceErrors = new ArrayList<>();
+        LOGGER.info("detectWhitespaceOnlyElements get called");
+        
+        try {
+            SAXParserFactory factory = SAXParserFactory.newInstance();
+            factory.setFeature("http://xml.org/sax/features/use-entity-resolver2", true);
+            factory.setNamespaceAware(true);
+
+            SAXParser parser = factory.newSAXParser();
+
+            DefaultHandler handler = new DefaultHandler() {
+                private Locator locator;
+                private boolean inElement = false;
+                private String currentElement = null;
+                private boolean hasOnlyWhitespace = false;
+                private boolean hasContent = false;
+                private Stack<String> elementStack = new Stack<>();
+                private Map<String, Integer> elementLineNumbers = new HashMap<>();
+                private Map<String, Integer> elementCounts = new HashMap<>();
+
+                @Override
+                public void setDocumentLocator(Locator locator) {
+                    this.locator = locator;
+                }
+
+                @Override
+                public void startElement(String uri, String localName, String qName, Attributes attributes) {
+                    // Keep track of element count for the bracketed notation
+                    String parentPath = getCurrentPath();
+                    if (!parentPath.isEmpty()) {
+                        elementCounts.put(parentPath + "." + qName,
+                                elementCounts.getOrDefault(parentPath + "." + qName, 0) + 1);
+                    }
+
+                    elementStack.push(qName);
+                    inElement = true;
+                    currentElement = qName;
+                    hasOnlyWhitespace = false;
+                    hasContent = false;
+
+                    // Store the line number
+                    elementLineNumbers.put(getCurrentPath(), locator.getLineNumber());
+                }
+
+                @Override
+                public void characters(char[] ch, int start, int length) {
+                    if (inElement) {
+                        String content = new String(ch, start, length);
+                        if (content.length() > 0) {
+                            if (content.trim().isEmpty()) {
+                                hasOnlyWhitespace = true;
+                            } else {
+                                hasContent = true;
+                            }
+                        }
+                    }
+                }
+
+                @Override
+                public void endElement(String uri, String localName, String qName) {
+                    if (inElement && hasOnlyWhitespace && !hasContent) {
+                        String path = getCurrentPath();
+                        
+                        // Format the element path for error reporting
+                        String formattedElementPath = formatElementPath(path);
+                        
+                        // This is the key change - use SchemaValidationErrorHelper to get XSD line number
+                        // Convert the path from dot notation to XPath for the helper
+                        String xpathPath = "/" + path.replace(".", "/");
+                        ElementResponse elementResponse = errorHelper.getElement(xpathPath);
+                        
+                        ValidationError error = new ValidationError();
+                        error.setType("Schema");
+                        error.setElement(formattedElementPath);
+                        
+                        // Use XSD line number from the helper if available
+                        String elementRef = elementResponse.getElement();
+                        if (elementRef != null && !elementRef.isEmpty()) {
+                            error.setElementRef(elementRef);
+                        } else {
+                            // Fallback to XML line number if no XSD reference is found
+                            int lineNumber = elementLineNumbers.getOrDefault(path, -1);
+                            error.setElementRef(String.valueOf(lineNumber) + "A");
+                        }
+
+                        // Set description using the proper format with UniqueID
+                        String firmId = getFirmIdFromXml(dpInfo);
+                        error.setDescription(firmId + ": This field must be completed .");
+
+                        whitespaceErrors.add(error);
+
+                        LOGGER.info("Found element with only whitespace: {} at line {} - Path: {} - ElementRef: {}",
+                                qName, elementLineNumbers.getOrDefault(path, -1), formattedElementPath, error.getElementRef());
+                    }
+
+                    inElement = false;
+                    currentElement = null;
+                    elementStack.pop();
+                }
+
+                private String getCurrentPath() {
+                    if (elementStack.isEmpty()) {
+                        return "";
+                    }
+                    StringBuilder path = new StringBuilder();
+                    for (String element : elementStack) {
+                        if (path.length() > 0) {
+                            path.append(".");
+                        }
+                        path.append(element);
+                    }
+                    return path.toString();
+                }
+
+                private String formatElementPath(String path) {
+                    // Split the path into elements
+                    String[] elements = path.split("\\.");
+                    StringBuilder formattedPath = new StringBuilder();
+
+                    // Keep track of partial paths to look up element count
+                    StringBuilder currentPath = new StringBuilder();
+
+                    for (int i = 0; i < elements.length; i++) {
+                        if (i > 0) {
+                            formattedPath.append(".");
+                        }
+                        formattedPath.append(elements[i]);
+
+                        // Add count in brackets - using 1 as default for your format
+                        formattedPath.append("[1]");
+                    }
+
+                    return formattedPath.toString();
+                }
+            };
+
+            parser.parse(new InputSource(inputStream), handler);
+            return whitespaceErrors;
+
+        } catch (Exception e) {
+            LOGGER.error("Error checking for whitespace-only elements", e);
+            ValidationError error = new ValidationError();
+            error.setType("Schema");
+            error.setElement("Document");
+            error.setElementRef("N/A");
+            error.setDescription("Error checking for whitespace-only elements: " + e.getMessage());
+            whitespaceErrors.add(error);
+            return whitespaceErrors;
+        }
+    }
+    
+    // Helper method to get Firm ID from XML or processing info
+    private String getFirmIdFromXml(DataProcessingInfo dpInfo) {
+        // Extract the UniqueID/FirmID for error messages
+        // In a real implementation, you would parse this from the XML
+        return "UniqueIDABC12345678910";
+    }
+}
