@@ -1,372 +1,223 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- 
-    ******************************************************************* 
-    * 
-    *    Schema for: Data Item REP026a - Access to Cash - Banks and Building Societies 
-    *    Version:    1 
-    *    Date:       24 July 2024 
-    *    Modified:   To detect and reject whitespace-only content
-    * 
-    ******************************************************************* 
---> 
-<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" 
-    attributeFormDefault="unqualified" targetNamespace="urn:fsa-gov-uk:MER:REP026a:1" 
-    xmlns="urn:fsa-gov-uk:MER:REP026a:1" xmlns:mer-meta="urn:fsa-gov-uk:MER:Meta-Data:1" version="1" 
-    id="MER-REP026a"> 
+import java.io.*;
+import javax.xml.stream.*;
+import java.util.regex.Pattern;
 
-    <xs:annotation> 
-        <xs:documentation> 
-            <mer-meta:DataItemReference>REP026a</mer-meta:DataItemReference> 
-            <mer-meta:DataItemName>Access to Cash - Banks and Building Societies</mer-meta:DataItemName> 
-        </xs:documentation> 
-    </xs:annotation> 
+/**
+ * Utility class for processing XML files by removing spaces between tags.
+ * Designed to handle XML files up to 200MB efficiently with streaming.
+ */
+public class XMLSpaceRemover {
 
-    <!-- First include common types -->
-    <xs:include schemaLocation="../../CommonTypes/v17/CommonTypes-Schema.xsd"/>
+    private static final int BUFFER_SIZE = 8192;
 
-    <!-- Then define custom types that extend/restrict the common types -->
-    <xs:simpleType name="NonWhitespaceString">
-        <xs:restriction base="xs:string">
-            <xs:pattern value=".*\S.*"/>
-            <xs:minLength value="1"/>
-        </xs:restriction>
-    </xs:simpleType>
+    /**
+     * Removes spaces between XML tags using efficient streaming approach.
+     * Example: "<test>      </test>" becomes "<test></test>"
+     *
+     * @param inputStream the input XML as an InputStream
+     * @return an InputStream containing the processed XML
+     * @throws IOException if an I/O error occurs
+     */
+    public static InputStream removeSpacesBetweenTags(InputStream inputStream) throws IOException {
+        if (inputStream == null) {
+            throw new IllegalArgumentException("Input stream cannot be null");
+        }
 
-    <!-- Restriction for string fields -->
-    <xs:simpleType name="RequiredString100Type">
-        <xs:restriction base="NonWhitespaceString">
-            <xs:maxLength value="100"/>
-        </xs:restriction>
-    </xs:simpleType>
+        File tempOutputFile = File.createTempFile("processed_xml_", ".tmp");
+        tempOutputFile.deleteOnExit();
+        
+        try (BufferedOutputStream outputStream = new BufferedOutputStream(
+                new FileOutputStream(tempOutputFile), BUFFER_SIZE)) {
+            
+            processXmlStream(inputStream, outputStream);
+        } catch (XMLStreamException e) {
+            throw new IOException("Error processing XML stream", e);
+        }
+        
+        // Return the processed content as an InputStream
+        return new BufferedInputStream(new FileInputStream(tempOutputFile), BUFFER_SIZE);
+    }
+    
+    /**
+     * Universal method that can handle any XML processing with spaces between tags.
+     * This method is designed to efficiently process large XML files (up to 200MB).
+     *
+     * @param inputStream the input XML as an InputStream
+     * @return an InputStream containing the processed XML
+     * @throws IOException if an I/O error occurs
+     */
+    public static InputStream processXML(InputStream inputStream) throws IOException {
+        return removeSpacesBetweenTags(inputStream);
+    }
 
-    <xs:simpleType name="RequiredString400Type">
-        <xs:restriction base="NonWhitespaceString">
-            <xs:maxLength value="400"/>
-        </xs:restriction>
-    </xs:simpleType>
+    /**
+     * Process XML using StAX parser for memory efficiency.
+     * 
+     * @param input the input XML stream
+     * @param output the output stream where processed XML will be written
+     * @throws XMLStreamException if XML parsing error occurs
+     * @throws IOException if I/O error occurs
+     */
+    private static void processXmlStream(InputStream input, OutputStream output) 
+            throws XMLStreamException, IOException {
+        
+        XMLInputFactory inputFactory = XMLInputFactory.newInstance();
+        // Disable external entity resolution for security
+        inputFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, Boolean.FALSE);
+        inputFactory.setProperty(XMLInputFactory.SUPPORT_DTD, Boolean.FALSE);
+        
+        XMLStreamReader reader = inputFactory.createXMLStreamReader(input);
+        XMLOutputFactory outputFactory = XMLOutputFactory.newInstance();
+        XMLStreamWriter writer = outputFactory.createXMLStreamWriter(output);
+        
+        // Track state to detect whitespace-only content
+        String currentElement = null;
+        StringBuilder contentBuffer = new StringBuilder();
+        boolean hasNonWhitespace = false;
+        
+        while (reader.hasNext()) {
+            int event = reader.next();
+            
+            switch (event) {
+                case XMLStreamConstants.START_DOCUMENT:
+                    writer.writeStartDocument(reader.getEncoding(), reader.getVersion());
+                    break;
+                    
+                case XMLStreamConstants.END_DOCUMENT:
+                    writer.writeEndDocument();
+                    break;
+                    
+                case XMLStreamConstants.START_ELEMENT:
+                    // If we were tracking content for a previous element, write it now
+                    if (currentElement != null && contentBuffer.length() > 0) {
+                        if (hasNonWhitespace) {
+                            writer.writeCharacters(contentBuffer.toString());
+                        }
+                        contentBuffer.setLength(0);
+                        hasNonWhitespace = false;
+                    }
+                    
+                    currentElement = reader.getLocalName();
+                    writer.writeStartElement(reader.getPrefix(), reader.getLocalName(), 
+                            reader.getNamespaceURI());
+                    
+                    // Write all namespace declarations
+                    for (int i = 0; i < reader.getNamespaceCount(); i++) {
+                        writer.writeNamespace(reader.getNamespacePrefix(i), 
+                                reader.getNamespaceURI(i));
+                    }
+                    
+                    // Write all attributes
+                    for (int i = 0; i < reader.getAttributeCount(); i++) {
+                        writer.writeAttribute(reader.getAttributePrefix(i),
+                                reader.getAttributeNamespace(i),
+                                reader.getAttributeLocalName(i),
+                                reader.getAttributeValue(i));
+                    }
+                    break;
+                    
+                case XMLStreamConstants.END_ELEMENT:
+                    // If we have content for the current element
+                    if (currentElement != null && currentElement.equals(reader.getLocalName())) {
+                        if (contentBuffer.length() > 0) {
+                            // Only write content if it's not just whitespace
+                            if (hasNonWhitespace) {
+                                writer.writeCharacters(contentBuffer.toString());
+                            }
+                            contentBuffer.setLength(0);
+                        }
+                        hasNonWhitespace = false;
+                    }
+                    
+                    writer.writeEndElement();
+                    currentElement = null;
+                    break;
+                    
+                case XMLStreamConstants.CHARACTERS:
+                    if (currentElement != null) {
+                        String text = reader.getText();
+                        contentBuffer.append(text);
+                        // Check if content has non-whitespace
+                        if (!hasNonWhitespace && !Pattern.matches("\\s*", text)) {
+                            hasNonWhitespace = true;
+                        }
+                    }
+                    break;
+                    
+                case XMLStreamConstants.CDATA:
+                    writer.writeCData(reader.getText());
+                    break;
+                    
+                case XMLStreamConstants.COMMENT:
+                    writer.writeComment(reader.getText());
+                    break;
+                    
+                case XMLStreamConstants.PROCESSING_INSTRUCTION:
+                    writer.writeProcessingInstruction(reader.getPITarget(), reader.getPIData());
+                    break;
+                    
+                case XMLStreamConstants.DTD:
+                    writer.writeDTD(reader.getText());
+                    break;
+                    
+                case XMLStreamConstants.ENTITY_REFERENCE:
+                    writer.writeEntityRef(reader.getLocalName());
+                    break;
+            }
+        }
+        
+        writer.flush();
+        writer.close();
+        reader.close();
+    }
 
-    <xs:simpleType name="RequiredString2000Type">
-        <xs:restriction base="NonWhitespaceString">
-            <xs:maxLength value="2000"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for PostCode to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredPostCodeType">
-        <xs:restriction base="PostCodeType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for SortCode to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredSortcodeType">
-        <xs:restriction base="SortcodeType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for EastNorth to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredEastNorthType">
-        <xs:restriction base="EastNorthType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for LongLat to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredLongLatType">
-        <xs:restriction base="LongLatType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for NonNegativeInteger to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredNonNegativeIntegerType">
-        <xs:restriction base="NonNegativeIntegerType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for NonNegativeFloat2 to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredNonNegativeFloat2Type">
-        <xs:restriction base="NonNegativeFloat2Type">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Custom restriction for MonetaryType to prevent whitespace-only values -->
-    <xs:simpleType name="RequiredNonNegativeMonetaryType">
-        <xs:restriction base="NonNegativeMonetaryType">
-            <xs:pattern value=".*\S.*"/>
-        </xs:restriction>
-    </xs:simpleType>
-
-    <!-- Main element definition -->
-    <xs:element name="REP026a-AccesstoCashBanksandBuildingSocieties"> 
-        <xs:complexType> 
-            <xs:sequence> 
-                <xs:element name="IdentifyingInformation" minOccurs="1"> 
-                    <xs:complexType> 
-                        <xs:sequence> 
-                            <xs:element name="FRN" type="FRNType" minOccurs="1"/> 
-                        </xs:sequence> 
-                    </xs:complexType> 
-                </xs:element> 
-                <xs:element name="BranchInformation" minOccurs="1" maxOccurs="unbounded"> 
-                    <xs:complexType> 
-                        <xs:sequence> 
-                            <xs:element name="BUID" type="RequiredString100Type" minOccurs="1"/> 
-                            <xs:element name="MUID" type="String100Type" minOccurs="0"/> 
-                            <xs:element name="BranchName" type="String100Type" minOccurs="0"/> 
-                            <xs:element name="Brand" type="RequiredString100Type" minOccurs="1"/> 
-                            <xs:element name="SortCode" type="RequiredSortcodeType" minOccurs="1"/> 
-                            <xs:element name="OtherID" type="String2000Type" minOccurs="0"/> 
-                            <xs:element name="Leasehold" type="YesNoNAType" minOccurs="1"/> 
-                             
-                            <xs:element name="LocationInformation" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="Postcode" type="RequiredPostCodeType" minOccurs="1"/> 
-                                        <xs:element name="Address" type="RequiredString2000Type" minOccurs="1"/> 
-                                        <xs:element name="Easting" type="RequiredEastNorthType" minOccurs="1"/> 
-                                        <xs:element name="Northing" type="RequiredEastNorthType" minOccurs="1"/> 
-                                        <xs:element name="Latitude" type="RequiredLongLatType" minOccurs="1"/> 
-                                        <xs:element name="Longitude" type="RequiredLongLatType" minOccurs="1"/> 
-                                        <xs:element name="OtherLocation" type="String2000Type" minOccurs="0"/>                                                     
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="BranchOpeningHours" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="Monday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Tuesday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Wednesday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Thursday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Friday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Saturday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Sunday" type="RequiredString400Type" minOccurs="1"/> 
-                                        <xs:element name="Reduced" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="TempClosedDays" type="NonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="TempClosedReason" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="OtherHours" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="BranchCharacteristicsInternalFacilities" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="Agency" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="Dependant" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="CommunityBanker" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="CounterFtoF" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerDeposits" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="BusinessDeposits" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerWithdrawals" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="BusinessWithdrawals" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="BusinessBalanceEnq" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="LBIT" type="YesNoType" minOccurs="1"/> 
-                                        <xs:element name="FreeATMID" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="PAYATMID" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="CounterAll" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="CounterPersonal" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="CounterSME" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMAll" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMPersonal" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMSME" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMNote" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMCoin" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ATMCashIDs" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="ATMSupport" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="NonChipCard" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="OtherType" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="BranchAccessibility" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="Wheelchair" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="StepFree" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="Hearing" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="VisualImpairment" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="OtherAccess" type="String400Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="ExternalFacilities" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="ExternalDeposit" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="ExternalFTUATM" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="ExternalPTUATM" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="ExternalAllDay" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="OtherExternal" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="UsageLevels" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="ConsumerFootfall" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="BusinessFootfall" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerVolWithdrawal" type="RequiredNonNegativeMonetaryType" minOccurs="1"/> 
-                                        <xs:element name="BusinessVolWithdrawal" type="RequiredNonNegativeMonetaryType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerVolDeposit" type="RequiredNonNegativeMonetaryType" minOccurs="1"/> 
-                                        <xs:element name="BusinessVolDeposit" type="RequiredNonNegativeMonetaryType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerWithdrawalTrans" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="BusinessWithdrawalTrans" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerDepositTrans" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="BusinessDepositTrans" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ConsumerBalanceEnq" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="BusinessBalanceEnq" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="NoRegisteredPersonalCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="DefnRegularPersonalCustomer" type="String2000Type" minOccurs="0"/>                                                                                                                              
-                                        <xs:element name="NoRegularPersonalCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoOnlineCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoMobileBankingCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoPhoneBankingCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="DefnRegularSMECustomer" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="NoRegularSMECustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoSMEDepositCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoSMEWithdrawalCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/>                             
-                                        <xs:element name="NoRegisteredSMECustomers" type="NonNegativeIntegerType" minOccurs="0"/>                             
-                                        <xs:element name="OtherUsage" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="CustomersVulnerableCirc" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="NoVulnerableCustomers" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="NoPassbookNonChipCustomers" type="NonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="NoBasicAccounts" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="OtherVulnerable" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="SupportStrategyVulnerableCustomers" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="SupportStrategy" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="RemovalSatHours" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="SaturdayClosure" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="SaturdayClosureResidual" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="ProposedClosure" minOccurs="1"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="Closure" type="YesNoType" minOccurs="1"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="ProposedClosureDetails" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="ClosureDate" type="DateRestriction" minOccurs="0"/> 
-                                        <xs:element name="AnnouncementDate" type="DateRestriction" minOccurs="0"/> 
-                                        <xs:element name="ATMRemaining" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="PreviousHopper" type="YesNoNAType" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="CommunicationAndClosures" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="TwelveWeeks" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="LocalStakeholders" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="EngagementStrategy" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="ProvisionOfAlternativeAccessPoint" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="ProvisionGap" type="YesNoNAType" minOccurs="1"/> 
-                                        <xs:element name="ProvisionGapTime" type="RequiredNonNegativeIntegerType" minOccurs="1"/> 
-                                        <xs:element name="ProvisionGapDetails" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="AvailablePO" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="NearestPostcode" type="RequiredPostCodeType" minOccurs="0"/> 
-                                        <xs:element name="NearestAddress" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="POEnhanced" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="POOutreach" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="DrivingTime" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="PublicTransportTime" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="MonOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="TuesOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="WedOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="ThursOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="FriOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="SatOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="SunOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="POCapacity" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="POSuitability" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="OtherPO" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="ImpactPODeflection" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="SMEPODeflection" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="SMEOtherDeflection" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="SMEResidual" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="SMECosts" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="SMEContactStrategy" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="SMEExcessDeposits" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="RemainingBranchesAndDeflection" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="BranchPostcode" type="RequiredPostCodeType" minOccurs="0"/> 
-                                        <xs:element name="BranchAddress" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="BranchDrivingTime" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="BranchPublicTransportTime" type="RequiredNonNegativeIntegerType" minOccurs="0"/> 
-                                        <xs:element name="BranchMonOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchTuesOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchWedOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchThursOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchFriOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchSatOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="BranchSunOH" type="String400Type" minOccurs="0"/> 
-                                        <xs:element name="OHDeflection" type="YesNoNAType" minOccurs="0"/> 
-                                        <xs:element name="ServicesDeflection" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="SuitabilityDeflection" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                            <xs:element name="RemainingBSAndATM" minOccurs="0"> 
-                                <xs:complexType> 
-                                    <xs:sequence> 
-                                        <xs:element name="BSPostcode" type="RequiredPostCodeType" minOccurs="1"/> 
-                                        <xs:element name="BSAddress" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="BSDistance" type="RequiredNonNegativeFloat2Type" minOccurs="1"/> 
-                                        <xs:element name="FTUATMPostcode" type="PostCodeType" minOccurs="0"/> 
-                                        <xs:element name="FTUATMAddress" type="String2000Type" minOccurs="0"/> 
-                                        <xs:element name="ATMDistance" type="RequiredNonNegativeFloat2Type" minOccurs="1"/> 
-                                        <xs:element name="OtherATM" type="String2000Type" minOccurs="0"/> 
-                                    </xs:sequence> 
-                                </xs:complexType> 
-                            </xs:element> 
-                        </xs:sequence> 
-                    </xs:complexType> 
-                </xs:element> 
-            </xs:sequence> 
-            <xs:attribute name="currency" fixed="GBP" use="required"/> 
-            <xs:attribute name="units" fixed="single" use="required"/> 
-        </xs:complexType> 
-    </xs:element> 
-</xs:schema>
+    /**
+     * Example usage of the XML space remover utility.
+     */
+    public static void main(String[] args) {
+        try {
+            // Example XML with spaces between tags
+            String xml = "<root>\n  <test>      </test>\n  <another>content</another>\n</root>";
+            InputStream inputStream = new ByteArrayInputStream(xml.getBytes());
+            
+            // Process the XML
+            InputStream result = processXML(inputStream);
+            
+            // Print the result
+            BufferedReader reader = new BufferedReader(new InputStreamReader(result));
+            String line;
+            System.out.println("Processed XML:");
+            while ((line = reader.readLine()) != null) {
+                System.out.println(line);
+            }
+            
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Processes a large XML file from an input file path and saves the result to an output file path.
+     * Suitable for handling files up to 200MB.
+     * 
+     * @param inputFilePath path to the input XML file
+     * @param outputFilePath path where the processed XML will be saved
+     * @throws IOException if an I/O error occurs
+     */
+    public static void processLargeXmlFile(String inputFilePath, String outputFilePath) throws IOException {
+        try (InputStream inputStream = new BufferedInputStream(new FileInputStream(inputFilePath), BUFFER_SIZE);
+             OutputStream outputStream = new BufferedOutputStream(new FileOutputStream(outputFilePath), BUFFER_SIZE)) {
+            
+            InputStream processedStream = processXML(inputStream);
+            
+            // Transfer processed content to output file
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int bytesRead;
+            while ((bytesRead = processedStream.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+            
+            processedStream.close();
+        }
+    }
+}
