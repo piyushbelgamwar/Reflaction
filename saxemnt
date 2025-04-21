@@ -1,195 +1,3 @@
-# XML Validation Enhancement: Whitespace Validation with XSD Line Numbers
-
-## Problem Statement
-
-The current implementation has two validation methods:
-
-1. `performAsyncSchemaValidationStandard` - Performs standard XSD schema validation and reports errors with XSD line numbers (e.g., "16A", "27A")
-2. `performAsyncSchemaValidationWithWhitespace` - Detects whitespace-only elements but reports errors with XML document line numbers (e.g., "330A", "331A")
-
-The issue is that testers want all validation errors to use XSD schema line numbers consistently, including whitespace validation errors.
-
-## Solution Overview
-
-Modify the whitespace detection code to use the same element reference system that the standard validation uses. This ensures consistent line number references across both validation methods.
-
-## Implementation Steps
-
-### 1. Update the `detectWhitespaceOnlyElements` Method
-
-Replace the current `detectWhitespaceOnlyElements` method in `SaxonicaSchemaValidator.java` with the following implementation:
-
-```java
-private List<ValidationError> detectWhitespaceOnlyElements(InputStream inputStream, DataProcessingInfo dpInfo) {
-    final List<ValidationError> whitespaceErrors = new ArrayList<>();
-    LOGGER.info("detectWhitespaceOnlyElements get called");
-    
-    // Get data item version for schema lookup
-    String dataItemWithVersion;
-    if (dpInfo.getFilePath() == null) {
-        dataItemWithVersion = dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
-    } else {
-        dataItemWithVersion = dpInfo.getFilePath();
-    }
-    
-    // Create SchemaValidationErrorHelper to use the same error reference system as standard validation
-    SchemaValidationErrorHelper errorHelper = new SchemaValidationErrorHelper(dpInfo);
-    
-    try {
-        SAXParserFactory factory = SAXParserFactory.newInstance();
-        factory.setFeature("http://xml.org/sax/features/use-entity-resolver2", true);
-        factory.setNamespaceAware(true);
-
-        SAXParser parser = factory.newSAXParser();
-
-        DefaultHandler handler = new DefaultHandler() {
-            private Locator locator;
-            private boolean inElement = false;
-            private String currentElement = null;
-            private boolean hasOnlyWhitespace = false;
-            private boolean hasContent = false;
-            private Stack<String> elementStack = new Stack<>();
-            private Map<String, Integer> elementLineNumbers = new HashMap<>();
-            private Map<String, Integer> elementCounts = new HashMap<>();
-
-            @Override
-            public void setDocumentLocator(Locator locator) {
-                this.locator = locator;
-            }
-
-            @Override
-            public void startElement(String uri, String localName, String qName, Attributes attributes) {
-                // Keep track of element count for the bracketed notation
-                String parentPath = getCurrentPath();
-                if (!parentPath.isEmpty()) {
-                    elementCounts.put(parentPath + "." + qName,
-                            elementCounts.getOrDefault(parentPath + "." + qName, 0) + 1);
-                }
-
-                elementStack.push(qName);
-                inElement = true;
-                currentElement = qName;
-                hasOnlyWhitespace = false;
-                hasContent = false;
-
-                // Store the line number
-                elementLineNumbers.put(getCurrentPath(), locator.getLineNumber());
-            }
-
-            @Override
-            public void characters(char[] ch, int start, int length) {
-                if (inElement) {
-                    String content = new String(ch, start, length);
-                    if (content.length() > 0) {
-                        if (content.trim().isEmpty()) {
-                            hasOnlyWhitespace = true;
-                        } else {
-                            hasContent = true;
-                        }
-                    }
-                }
-            }
-
-            @Override
-            public void endElement(String uri, String localName, String qName) {
-                if (inElement && hasOnlyWhitespace && !hasContent) {
-                    String path = getCurrentPath();
-                    
-                    // Format the element path in the desired format with [1] indexes
-                    String formattedElementPath = formatElementPath(path);
-                    
-                    // Get lookup path for SchemaValidationErrorHelper
-                    String lookupPath = "/" + path.replace(".", "/");
-                    
-                    // Get the element reference using the same helper as standard validation
-                    ElementResponse elementResponse = errorHelper.getElement(lookupPath);
-                    
-                    ValidationError error = new ValidationError();
-                    // Set type as constant "Schema"
-                    error.setType("Schema");
-
-                    // Set element to the complete path where it happened
-                    error.setElement(formattedElementPath);
-
-                    // Use the element reference from the helper
-                    String elementRef = elementResponse.getElement();
-                    if (elementRef != null && !elementRef.isEmpty()) {
-                        // Use XSD line number reference
-                        error.setElementRef(elementRef);
-                    } else {
-                        // Fallback to XML line number if lookup fails
-                        int lineNumber = elementLineNumbers.getOrDefault(path, -1);
-                        error.setElementRef(String.valueOf(lineNumber) + "A");
-                    }
-
-                    // Set description to constant message
-                    error.setDescription("This field must be completed .");
-
-                    whitespaceErrors.add(error);
-
-                    LOGGER.info("Found element with only whitespace: {} - Path: {} - ElementRef: {}", 
-                            qName, formattedElementPath, error.getElementRef());
-                }
-
-                inElement = false;
-                currentElement = null;
-                elementStack.pop();
-            }
-
-            private String getCurrentPath() {
-                if (elementStack.isEmpty()) {
-                    return "";
-                }
-                StringBuilder path = new StringBuilder();
-                for (String element : elementStack) {
-                    if (path.length() > 0) {
-                        path.append(".");
-                    }
-                    path.append(element);
-                }
-                return path.toString();
-            }
-
-            private String formatElementPath(String path) {
-                // Split the path into elements
-                String[] elements = path.split("\\.");
-                StringBuilder formattedPath = new StringBuilder();
-
-                for (int i = 0; i < elements.length; i++) {
-                    if (formattedPath.length() > 0) {
-                        formattedPath.append(".");
-                    }
-                    formattedPath.append(elements[i]);
-                    
-                    // Add count in brackets - using 1 as default for your format
-                    formattedPath.append("[1]");
-                }
-
-                return formattedPath.toString();
-            }
-        };
-
-        parser.parse(new InputSource(inputStream), handler);
-        return whitespaceErrors;
-
-    } catch (Exception e) {
-        LOGGER.error("Error checking for whitespace-only elements", e);
-        ValidationError error = new ValidationError();
-        error.setType("Schema");
-        error.setElement("Document");
-        error.setElementRef("N/A");
-        error.setDescription("Error checking for whitespace-only elements: " + e.getMessage());
-        whitespaceErrors.add(error);
-        return whitespaceErrors;
-    }
-}
-```
-
-### 2. Update the `performAsyncSchemaValidationWithWhitespace` Method
-
-The method should now pass the DataProcessingInfo to the whitespace detection:
-
-```java
 private ValidationErrorResponse performAsyncSchemaValidationWithWhitespace(InputStream inputStream, DataProcessingInfo dpInfo) {
     List<ValidationError> validationErrorsList = new ArrayList<>();
 
@@ -224,30 +32,38 @@ private ValidationErrorResponse performAsyncSchemaValidationWithWhitespace(Input
             }
         }
 
-        // Check for whitespace-only elements with a fresh stream
-        try (FileInputStream whitespaceCheckStream = new FileInputStream(tempFile)) {
-            // Pass the DataProcessingInfo to detectWhitespaceOnlyElements
-            List<ValidationError> whitespaceErrors = detectWhitespaceOnlyElements(whitespaceCheckStream, dpInfo);
-            validationErrorsList.addAll(whitespaceErrors);
-        }
-
-        // Continue with Saxon validation using another fresh stream
+        // Get the data item version
         String dataItemWithVersion;
         if (dpInfo.getFilePath() == null) {
             dataItemWithVersion = this.dataItemVersionService.getDataItemVersionFromUrlPath(dpInfo);
         } else {
             dataItemWithVersion = dpInfo.getFilePath();
         }
-
         LOGGER.info("Data Item Version is {}", dataItemWithVersion);
 
+        // Get schema file path
+        String stringSchemaFile = this.dataItemVersionService.getStringFileNameByVersionAndExtension(
+                dataItemWithVersion, this.schemaFileSuffix, dpInfo);
+        LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+
+        // Build an XSD element to line number mapping
+        Map<String, String> elementToXsdLineMap = buildElementToXsdLineMapping(stringSchemaFile);
+
+        // Check for whitespace-only elements with XSD line numbers
+        try (FileInputStream whitespaceCheckStream = new FileInputStream(tempFile)) {
+            List<ValidationError> whitespaceErrors = detectWhitespaceOnlyElementsWithXsdLineNumbers(
+                    whitespaceCheckStream, elementToXsdLineMap, dpInfo);
+            validationErrorsList.addAll(whitespaceErrors);
+        }
+
+        // Continue with Saxon validation
         try (FileInputStream validationStream = new FileInputStream(tempFile)) {
             System.setProperty("javax.xml.transform.TransformerFactory", "com.saxonica.config.EnterpriseTransformerFactory");
             TransformerFactory transformerFactory = CommonUtility.getTransformerFactory();
-            String stringSchemaFile = this.dataItemVersionService.getStringFileNameByVersionAndExtension(dataItemWithVersion, this.schemaFileSuffix, dpInfo);
-            LOGGER.info("stringSchemaFile = {}", stringSchemaFile);
+            
             StreamSource specific = new StreamSource(this.getClass().getClassLoader().getResource(stringSchemaFile).toExternalForm());
             ((EnterpriseTransformerFactory)transformerFactory).addSchema(specific);
+            
             Transformer trans = transformerFactory.newTransformer();
             StreamSource source = new StreamSource(validationStream);
             SAXResult sink = new SAXResult(new DefaultHandler());
@@ -275,40 +91,174 @@ private ValidationErrorResponse performAsyncSchemaValidationWithWhitespace(Input
     }
     return response;
 }
-```
 
-## Key Changes Explained
+/**
+ * Build a mapping from element names to their line numbers in the XSD schema
+ */
+private Map<String, String> buildElementToXsdLineMapping(String schemaFile) {
+    Map<String, String> elementToLineMap = new HashMap<>();
+    
+    try {
+        // Load the XSD schema file
+        URL schemaUrl = getClass().getClassLoader().getResource(schemaFile);
+        if (schemaUrl == null) {
+            LOGGER.error("Schema file not found: {}", schemaFile);
+            return elementToLineMap;
+        }
+        
+        // Read the schema file line by line to build the mapping
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                schemaUrl.openStream(), StandardCharsets.UTF_8))) {
+            
+            String line;
+            int lineNumber = 0;
+            
+            while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                
+                // Look for element definitions
+                // This regex matches xs:element name="ElementName"
+                Matcher matcher = Pattern.compile("<xs:element\\s+name=\"([^\"]+)\"").matcher(line);
+                
+                if (matcher.find()) {
+                    String elementName = matcher.group(1);
+                    // Store only the number part without "A" suffix - this will be added when formatting errors
+                    elementToLineMap.put(elementName, String.valueOf(lineNumber));
+                    LOGGER.debug("Found element {} at line {}", elementName, lineNumber);
+                }
+            }
+        }
+        
+    } catch (Exception e) {
+        LOGGER.error("Error building XSD element to line map", e);
+    }
+    
+    return elementToLineMap;
+}
 
-1. **Using SchemaValidationErrorHelper**: The whitespace detection now uses the same `SchemaValidationErrorHelper` that the standard validation uses, ensuring consistent element references.
+/**
+ * Detect whitespace-only elements and format validation errors using XSD line numbers
+ */
+private List<ValidationError> detectWhitespaceOnlyElementsWithXsdLineNumbers(
+        InputStream inputStream, Map<String, String> elementToXsdLineMap, DataProcessingInfo dpInfo) {
+    
+    final List<ValidationError> whitespaceErrors = new ArrayList<>();
+    LOGGER.info("detectWhitespaceOnlyElementsWithXsdLineNumbers is called");
+    
+    try {
+        SAXParserFactory factory = SAXParserFactory.newInstance();
+        factory.setFeature("http://xml.org/sax/features/use-entity-resolver2", true);
+        factory.setNamespaceAware(true);
 
-2. **XSD Line Number Lookup**: When a whitespace-only element is found, the code now looks up its XSD schema line number using the helper, rather than using the XML file line number.
+        SAXParser parser = factory.newSAXParser();
 
-3. **Path Conversion**: The code carefully handles the element path formatting to ensure it matches the format expected by the helper.
+        DefaultHandler handler = new DefaultHandler() {
+            private Locator locator;
+            private boolean inElement = false;
+            private String currentElement = null;
+            private boolean hasOnlyWhitespace = false;
+            private boolean hasContent = false;
+            private Stack<String> elementStack = new Stack<>();
+            
+            @Override
+            public void setDocumentLocator(Locator locator) {
+                this.locator = locator;
+            }
+            
+            @Override
+            public void startElement(String uri, String localName, String qName, Attributes attributes) {
+                elementStack.push(qName);
+                inElement = true;
+                currentElement = qName;
+                hasOnlyWhitespace = false;
+                hasContent = false;
+            }
+            
+            @Override
+            public void characters(char[] ch, int start, int length) {
+                if (inElement) {
+                    String content = new String(ch, start, length);
+                    if (content.length() > 0) {
+                        if (content.trim().isEmpty()) {
+                            hasOnlyWhitespace = true;
+                        } else {
+                            hasContent = true;
+                        }
+                    }
+                }
+            }
+            
+            @Override
+            public void endElement(String uri, String localName, String qName) {
+                if (inElement && hasOnlyWhitespace && !hasContent) {
+                    // Get the element path in the proper format expected by your code
+                    String elementPath = formatElementPath(getCurrentPath());
+                    
+                    // Extract the leaf element name for looking up the XSD line number
+                    String elementName = qName;
+                    
+                    // Get XSD line number with "A" suffix to match your format
+                    String xsdLineRef = elementToXsdLineMap.getOrDefault(elementName, "0");
+                    xsdLineRef = xsdLineRef + "A";
+                    
+                    ValidationError error = new ValidationError();
+                    error.setType("Schema");
+                    error.setElement(elementPath);
+                    error.setElementRef(xsdLineRef);
+                    error.setDescription("This field must be completed .");
+                    
+                    // Check for duplicates before adding - similar to how XsdErrorHandler works
+                    boolean isDuplicate = whitespaceErrors.stream()
+                            .anyMatch(e -> e.getElementRef().equals(xsdLineRef) && 
+                                     e.getElement().equals(elementPath));
+                    
+                    if (!isDuplicate) {
+                        whitespaceErrors.add(error);
+                        LOGGER.info("Found whitespace-only element: {} with XSD ref: {} - Path: {}", 
+                                elementName, xsdLineRef, elementPath);
+                    }
+                }
+                
+                inElement = false;
+                currentElement = null;
+                elementStack.pop();
+            }
+            
+            private String getCurrentPath() {
+                if (elementStack.isEmpty()) {
+                    return "";
+                }
+                StringBuilder path = new StringBuilder();
+                for (String element : elementStack) {
+                    if (path.length() > 0) {
+                        path.append(".");
+                    }
+                    path.append(element);
+                }
+                return path.toString();
+            }
+            
+            private String formatElementPath(String path) {
+                // Format the path to match what your XsdErrorHandler expects
+                // For REP026 files, should be something like: REP026c-AccesstoCashATM.ATMBranches.UsageLevels.ConsumerVolWithdrawal
+                if (path.contains(":")) {
+                    path = path.replaceAll("[^:]+:", "");
+                }
+                return path;
+            }
+        };
 
-4. **Fallback Mechanism**: If the helper can't find an XSD line number for an element, it falls back to using the XML file line number with an "A" suffix.
+        parser.parse(new InputSource(inputStream), handler);
+        return whitespaceErrors;
 
-## Testing
-
-To test these changes:
-
-1. Create an XML test file with several whitespace-only elements (e.g., `<ElementName>   </ElementName>`)
-2. Process the file with the updated validation code
-3. Verify that the error messages for whitespace-only elements now include XSD line number references (e.g., "16A", "27A") instead of XML file line numbers
-
-## Expected Results
-
-After these changes, all validation error messages should consistently use XSD schema line numbers, regardless of whether they come from standard validation or whitespace validation.
-
-For example:
-
-```
-Element: REP026c-AccesstoCashATM.ATMBranches.ProtectedATMs.ProtectedATM[1]
-Field: 63A
-Error: UniqueIDABC12345678910: This field must be completed .
-
-Element: REP026c-AccesstoCashATM.ATMBranches.UsageLevels.BusinessWithdrawalTrans[1]
-Field: 92A
-Error: UniqueIDABC12345678910: This field must be completed .
-```
-
-The key indicator of success is that the "Field" column now consistently shows XSD line numbers (like "63A" or "92A") rather than XML file line numbers (like "330A" or "331A") for whitespace validation errors.
+    } catch (Exception e) {
+        LOGGER.error("Error checking for whitespace-only elements", e);
+        ValidationError error = new ValidationError();
+        error.setType("Schema");
+        error.setElement("Document");
+        error.setElementRef("N/A");
+        error.setDescription("Error checking for whitespace-only elements: " + e.getMessage());
+        whitespaceErrors.add(error);
+        return whitespaceErrors;
+    }
+}
