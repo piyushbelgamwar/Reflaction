@@ -1,0 +1,49 @@
+package uk.org.fca.gabriel.experience.cfreg.config;
+
+import org.apache.http.HttpResponse;
+import org.apache.http.client.ConnectionReuseStrategy;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.protocol.HttpContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.web.client.RestTemplate;
+
+@Configuration
+public class RestTemplateConfig {
+
+    @Bean
+    @Profile("!local")
+    public RestTemplate restTemplate() {
+        // 1) configure timeouts
+        RequestConfig config = RequestConfig.custom()
+            .setConnectTimeout(10_000)
+            .setConnectionRequestTimeout(10_000)
+            .setSocketTimeout(10_000)
+            .build();
+
+        // 2) define a no-reuse strategy
+        ConnectionReuseStrategy noReuse = new ConnectionReuseStrategy() {
+            @Override
+            public boolean keepAlive(HttpResponse response, HttpContext context) {
+                // always close
+                return false;
+            }
+        };
+
+        // 3) build HttpClient with no-reuse
+        CloseableHttpClient httpClient = HttpClientBuilder.create()
+            .setDefaultRequestConfig(config)
+            .setConnectionReuseStrategy(noReuse)
+            .build();
+
+        // 4) wire into RestTemplate
+        HttpComponentsClientHttpRequestFactory factory =
+            new HttpComponentsClientHttpRequestFactory(httpClient);
+
+        return new RestTemplate(factory);
+    }
+}
