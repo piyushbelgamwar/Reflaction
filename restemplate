@@ -1,11 +1,12 @@
 package uk.org.fca.gabriel.experience.cfreg.config;
 
-import org.apache.http.HttpResponse;
-import org.apache.http.client.ConnectionReuseStrategy;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.protocol.HttpContext;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
+import org.apache.hc.core5.http.ConnectionReuseStrategy;
+import org.apache.hc.core5.http.HttpResponse;
+import org.apache.hc.core5.http.protocol.HttpContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -18,32 +19,27 @@ public class RestTemplateConfig {
     @Bean
     @Profile("!local")
     public RestTemplate restTemplate() {
-        // 1) configure timeouts
+        // 1) timeouts
         RequestConfig config = RequestConfig.custom()
-            .setConnectTimeout(10_000)
-            .setConnectionRequestTimeout(10_000)
-            .setSocketTimeout(10_000)
+            .setConnectTimeout(Timeout.ofSeconds(10))
+            .setResponseTimeout(Timeout.ofSeconds(10))
             .build();
 
-        // 2) define a no-reuse strategy
-        ConnectionReuseStrategy noReuse = new ConnectionReuseStrategy() {
-            @Override
-            public boolean keepAlive(HttpResponse response, HttpContext context) {
-                // always close
-                return false;
-            }
-        };
-
-        // 3) build HttpClient with no-reuse
-        CloseableHttpClient httpClient = HttpClientBuilder.create()
+        // 2) build HttpClient that never reuses connections
+        CloseableHttpClient httpClient = HttpClients.custom()
             .setDefaultRequestConfig(config)
-            .setConnectionReuseStrategy(noReuse)
+            // always return false ⇒ close socket after each request
+            .setConnectionReuseStrategy(new ConnectionReuseStrategy() {
+                @Override
+                public boolean keepAlive(HttpResponse response, HttpContext context) {
+                    return false;
+                }
+            })  // :contentReference[oaicite:0]{index=0}
             .build();
 
-        // 4) wire into RestTemplate
+        // 3) wire into RestTemplate
         HttpComponentsClientHttpRequestFactory factory =
             new HttpComponentsClientHttpRequestFactory(httpClient);
-
         return new RestTemplate(factory);
     }
 }
