@@ -1,70 +1,189 @@
-package uk.org.fca.gabriel.common.utility;
-
-import com.fasterxml.jackson.dataformat.xml.XmlMapper;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import javax.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
-import org.springframework.web.bind.annotation.RequestBody;
-import uk.org.fca.gabriel.common.domain.SaveDataItemRequest;
-
-@Component
-public class XmlToDtoConverter {
-    private static final Logger LOGGER = LoggerFactory.getLogger(XmlToDtoConverter.class);
-
-    public XmlToDtoConverter() {
+// In the GatewayServiceImpl.java file
+private boolean shouldCompressRequest(Object request) {
+    if (request == null) {
+        return false;
     }
 
-    /**
-     * Convert XML data from an InputStream to a DTO object
-     * @param inputStream The InputStream containing XML data
-     * @param className The class to convert the XML data to
-     * @return The converted DTO object
-     * @throws ClassNotFoundException If the XML format is incorrect or conversion fails
-     */
-    public Object covertToDTO(InputStream inputStream, Class className) throws ClassNotFoundException {
-        XmlMapper mapper = CommonUtility.getXmlMapper();
+    // For string or JSON objects, check string representation size
+    String requestStr = request instanceof String ? (String) request : 
+            request instanceof byte[] ? "" : objectToString(request);
 
-        try {
-            SaveDataItemRequest saveDataItemRequest = (SaveDataItemRequest)className.getConstructor().newInstance();
-            String rootElementName = saveDataItemRequest.getClass().getSimpleName();
-            
-            // Process the input stream directly with the XmlMapper
-            // The root element will be handled differently since we can't easily modify the stream
-            saveDataItemRequest = (SaveDataItemRequest)mapper.readValue(inputStream, className);
-            
-            if (saveDataItemRequest.getDataItem().getRequiredSchemaValObject(saveDataItemRequest) == null) {
-                throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
-            } else {
-                return saveDataItemRequest;
-            }
-        } catch (Exception e) {
-            LOGGER.error("Exception in convertToDTO: {}", e.getMessage(), e);
-            throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
-        }
+    // If it's a byte array, check its size directly
+    if (request instanceof byte[]) {
+        // Log size for debugging
+        LOGGER.info("Request is byte array, size: {} bytes", ((byte[]) request).length);
+        return ((byte[]) request).length > 1024 * 100; // Lower threshold to 100KB for testing
+    }
+
+    // Log size for debugging
+    LOGGER.info("Request string length: {} chars", requestStr.length());
+    return requestStr.length() > 1024 * 100; // Lower threshold to 100KB for testing
+}
+
+
+private byte[] compressString(String input) throws IOException {
+    ByteArrayOutputStream byteStream = new ByteArrayOutputStream(input.length() / 2); // Hint at expected size
+    try (GZIPOutputStream gzipStream = new GZIPOutputStream(byteStream, 8192)) { // Increase buffer size
+        gzipStream.write(input.getBytes(StandardCharsets.UTF_8));
     }
     
-    /**
-     * Keep the original String-based method for backward compatibility
-     */
-    public Object covertToDTO(@RequestBody @Valid String request, Class className) throws ClassNotFoundException {
-        XmlMapper mapper = CommonUtility.getXmlMapper();
+    byte[] compressed = byteStream.toByteArray();
+    LOGGER.info("Compressed string from {} bytes to {} bytes", input.length(), compressed.length);
+    return compressed;
+}
 
-        try {
-            SaveDataItemRequest saveDataItemRequest = (SaveDataItemRequest)className.getConstructor().newInstance();
-            String rootElementName = saveDataItemRequest.getClass().getSimpleName();
-            request = "<" + rootElementName + ">" + request + "</" + rootElementName + ">";
-            
-            // Convert the String to InputStream and use the new method
-            try (InputStream inputStream = new ByteArrayInputStream(request.getBytes())) {
-                return mapper.readValue(inputStream, className);
-            }
-        } catch (Exception e) {
-            LOGGER.error("Exception in convertToDTO: {}", e.getMessage(), e);
-            throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
+private byte[] compressBytes(byte[] input) throws IOException {
+    ByteArrayOutputStream byteStream = new ByteArrayOutputStream(input.length / 2); // Hint at expected size
+    try (GZIPOutputStream gzipStream = new GZIPOutputStream(byteStream, 8192)) { // Increase buffer size
+        gzipStream.write(input);
+    }
+    
+    byte[] compressed = byteStream.toByteArray();
+    LOGGER.info("Compressed bytes from {} bytes to {} bytes", input.length, compressed.length);
+    return compressed;
+}
+
+
+
+@Override
+public uk.gov.fsa.mer.gateway.ws.DirectSubmissionResponse directSubmission(@RequestHeader Map<String, String> requestHeaders, DirectSubmissionRequest requestDto) {
+    LOGGER.info("Starting directSubmission method with request size: approximately {} chars", 
+               requestDto != null ? estimateSize(requestDto) : "null");
+
+    // Check authentication
+    boolean isValid = checkUserAuthenticationSecreateId(requestHeaders);
+    if (!isValid) {
+        throw new ServiceCallException("weblogic.xml.crypto.wss.WSSecurityException: Failed to assert identity with UsernameToken.");
+    }
+
+    DirectSubmissionResponse response = null;
+    StringBuilder url = new StringBuilder();
+    url.append(env.getProperty(protocol)).append(env.getProperty(DCP_EXP_B2B_SERVICE_ENDPOINT)).append(env.getProperty(suffix));
+
+    UriComponentsBuilder builder = UriComponentsBuilder
+            .fromUriString(url.toString())
+            .path(gatewayServiceDirectSubmmision);
+
+    LOGGER.info("Direct submission URL: {}", builder);
+    try {
+        // Check if we should compress this request
+        boolean shouldCompress = shouldCompressRequest(requestDto);
+        LOGGER.info("Should compress request: {}", shouldCompress);
+        
+        // Always add these headers for large submissions
+        HttpHeaders httpHeaders = new HttpHeaders();
+        httpHeaders.setContentType(MediaType.APPLICATION_JSON);
+        httpHeaders.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+        
+        // Add custom headers
+        if (requestHeaders != null && !requestHeaders.isEmpty()) {
+            requestHeaders.forEach((key, value) -> {
+                if (!httpHeaders.containsKey(key)) {
+                    httpHeaders.add(key, value);
+                }
+            });
         }
+        
+        // Process request (compress if needed)
+        Object processedRequest = requestDto;
+        if (shouldCompress) {
+            try {
+                LOGGER.info("Compressing request...");
+                processedRequest = compressRequest(requestDto);
+                httpHeaders.add("Content-Encoding", "gzip");
+                LOGGER.info("Request compressed successfully");
+            } catch (Exception e) {
+                LOGGER.warn("Failed to compress request: {}", e.getMessage(), e);
+                // Continue with uncompressed request
+            }
+        }
+        
+        HttpEntity<Object> entity = new HttpEntity<>(processedRequest, httpHeaders);
+        
+        // Use RestTemplate with increased timeouts
+        ResponseEntity<Object> responseObject = restTemplate.exchange(
+                builder.toUriString(), 
+                HttpMethod.POST, 
+                entity, 
+                DirectSubmissionResponse.class);
+                
+        if (null != responseObject) {
+            response = new ObjectMapper().convertValue(responseObject.getBody(), DirectSubmissionResponse.class);
+        }
+
+        return JsonXmlConverter.xmlJsonDirectSubmissionResponse(response);
+    } catch (Exception ex) {
+        LOGGER.error("Exception in directSubmission: ", ex);
+        throw new InvalidInputDataException(Constants.UPLOAD_ERROR);
     }
 }
+
+// Helper method to estimate size
+private long estimateSize(Object obj) {
+    if (obj == null) return 0;
+    try {
+        return new ObjectMapper().writeValueAsString(obj).length();
+    } catch (Exception e) {
+        return -1;
+    }
+}
+
+
+@Bean
+public RestTemplate restTemplate() {
+    HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory();
+    
+    // Configure request factory with long timeouts
+    factory.setConnectTimeout(300000); // 5 minutes
+    factory.setReadTimeout(300000);    // 5 minutes
+    factory.setConnectionRequestTimeout(300000);
+    factory.setBufferRequestBody(false); // Very important for large requests
+    
+    // Configure HttpClient
+    RequestConfig requestConfig = RequestConfig.custom()
+        .setConnectTimeout(300000)
+        .setSocketTimeout(300000)
+        .setConnectionRequestTimeout(300000)
+        .build();
+        
+    // Increase buffer sizes and max connections
+    PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+    connectionManager.setMaxTotal(100);
+    connectionManager.setDefaultMaxPerRoute(20);
+    
+    // Create HttpClient with custom settings
+    HttpClient httpClient = HttpClients.custom()
+        .setDefaultRequestConfig(requestConfig)
+        .setConnectionManager(connectionManager)
+        .disableContentCompression() // We handle compression ourselves
+        .build();
+        
+    factory.setHttpClient(httpClient);
+    
+    return new RestTemplate(factory);
+}
+
+// At the start of the directSubmission method
+Runtime runtime = Runtime.getRuntime();
+long usedMemoryBefore = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
+LOGGER.info("Memory usage before processing: {}MB", usedMemoryBefore);
+
+// And after processing
+long usedMemoryAfter = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
+LOGGER.info("Memory usage after processing: {}MB, delta: {}MB", 
+            usedMemoryAfter, (usedMemoryAfter - usedMemoryBefore));
+
+
+// In XMLValidation class, modify the validateSubmissionRequest method
+public static uk.gov.fsa.mer.gateway.ws.DirectSubmissionResponse validateSubmissionRequest(JAXBElement<Object> directSubmission) {
+    LOGGER.info("Starting XML validation for large request");
+    try {
+        // existing code...
+        LOGGER.info("XML validation completed successfully");
+        return null; // or whatever indicates successful validation
+    } catch (Exception e) {
+        LOGGER.error("XML validation failed with error: {}", e.getMessage(), e);
+        // Create and return error response
+    }
+}
+
