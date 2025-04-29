@@ -1,0 +1,70 @@
+package uk.org.fca.gabriel.common.utility;
+
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import javax.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.RequestBody;
+import uk.org.fca.gabriel.common.domain.SaveDataItemRequest;
+
+@Component
+public class XmlToDtoConverter {
+    private static final Logger LOGGER = LoggerFactory.getLogger(XmlToDtoConverter.class);
+
+    public XmlToDtoConverter() {
+    }
+
+    /**
+     * Convert XML data from an InputStream to a DTO object
+     * @param inputStream The InputStream containing XML data
+     * @param className The class to convert the XML data to
+     * @return The converted DTO object
+     * @throws ClassNotFoundException If the XML format is incorrect or conversion fails
+     */
+    public Object covertToDTO(InputStream inputStream, Class className) throws ClassNotFoundException {
+        XmlMapper mapper = CommonUtility.getXmlMapper();
+
+        try {
+            SaveDataItemRequest saveDataItemRequest = (SaveDataItemRequest)className.getConstructor().newInstance();
+            String rootElementName = saveDataItemRequest.getClass().getSimpleName();
+            
+            // Process the input stream directly with the XmlMapper
+            // The root element will be handled differently since we can't easily modify the stream
+            saveDataItemRequest = (SaveDataItemRequest)mapper.readValue(inputStream, className);
+            
+            if (saveDataItemRequest.getDataItem().getRequiredSchemaValObject(saveDataItemRequest) == null) {
+                throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
+            } else {
+                return saveDataItemRequest;
+            }
+        } catch (Exception e) {
+            LOGGER.error("Exception in convertToDTO: {}", e.getMessage(), e);
+            throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
+        }
+    }
+    
+    /**
+     * Keep the original String-based method for backward compatibility
+     */
+    public Object covertToDTO(@RequestBody @Valid String request, Class className) throws ClassNotFoundException {
+        XmlMapper mapper = CommonUtility.getXmlMapper();
+
+        try {
+            SaveDataItemRequest saveDataItemRequest = (SaveDataItemRequest)className.getConstructor().newInstance();
+            String rootElementName = saveDataItemRequest.getClass().getSimpleName();
+            request = "<" + rootElementName + ">" + request + "</" + rootElementName + ">";
+            
+            // Convert the String to InputStream and use the new method
+            try (InputStream inputStream = new ByteArrayInputStream(request.getBytes())) {
+                return mapper.readValue(inputStream, className);
+            }
+        } catch (Exception e) {
+            LOGGER.error("Exception in convertToDTO: {}", e.getMessage(), e);
+            throw new ClassNotFoundException("XML_DATA_ITEM_WRONG_FORMAT");
+        }
+    }
+}
