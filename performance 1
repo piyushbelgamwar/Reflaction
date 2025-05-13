@@ -1,0 +1,204 @@
+As a developer analyzing this CPU issue, here are the specific questions I would ask:
+
+## 1. Infrastructure & Resources
+
+**"What are your current AWS Fargate configurations?"**
+- CPU/Memory allocation per task (e.g., 0.25 vCPU, 512MB?)
+- Number of running tasks
+- Auto-scaling settings (min/max tasks)
+- Load balancer configuration (connection limits, health checks)
+
+**"What's your MySQL setup?"**
+- Instance type (RDS specs)
+- Are you using read replicas?
+- Connection limits configured
+- Query performance insights enabled?
+
+## 2. Load Distribution
+
+**"How are the 600 concurrent logins distributed?"**
+- Do they all hit within seconds of each other?
+- Is there a burst pattern (e.g., 9 AM office hours)?
+- Are these real users or automated systems?
+- Any rate limiting implemented?
+
+## 3. External Service Dependencies
+
+**"Which external REST services are you calling and their SLAs?"**
+- Response time for `userDetails()` service
+- Response time for `userAuthAndFirmAssociations()` service
+- Are these internal microservices or third-party?
+- Do these services have their own rate limits?
+- What happens when these services are slow/down?
+
+**"Are there any service dependencies that could be eliminated?"**
+```java
+// Looking at your code, I see you call:
+// 1. userDetails()
+// 2. userAuthAndFirmAssociations()  
+// 3. currentDate()
+// 4. firmSchedule()
+// 5. crossValidationGroups()
+// 6. firmProfile()
+// 7. getPsdAifmdProfileCharacteristics()
+```
+Which of these can be:
+- Cached?
+- Made optional?
+- Called asynchronously?
+- Batched into single calls?
+
+## 4. Data Patterns
+
+**"What's the typical data size in responses?"**
+- Average size of `UserAuthAndFirmAssociationsResponse`
+- Number of firms per user (affects the loop complexity)
+- Size of firm schedule/profile data
+
+**"How often does this data change?"**
+- User firm associations - daily/weekly?
+- Cross validation groups - how frequently updated?
+- Current date - could be cached for minutes?
+
+## 5. Caching Strategy
+
+**"What caching is currently implemented?"**
+- Any in-memory caches?
+- Redis/external cache usage?
+- Database query caching?
+- HTTP response caching?
+
+**"What's the user session pattern?"**
+- Do users login multiple times per day?
+- How long are sessions typically?
+- Could you use session-based caching?
+
+## 6. Error Handling & Resilience
+
+**"What happens when external services are slow/unavailable?"**
+- Timeout configurations for each service call
+- Retry mechanisms in place
+- Circuit breaker patterns implemented?
+- Fallback strategies?
+
+**"How do you handle partial failures?"**
+- What if only one service is down?
+- Can login succeed with degraded functionality?
+
+## 7. Database Usage
+
+**"What database operations happen during login?"**
+```java
+// I notice you're not making direct DB calls in this code
+// But underlying services might be
+```
+- Are there database calls hidden in the services?
+- Connection pool configurations?
+- Any N+1 query problems?
+- Database query optimization?
+
+## 8. JVM & Application Metrics
+
+**"What's the current JVM configuration?"**
+- Heap size (-Xmx, -Xms)
+- GC settings
+- Thread pool configurations
+- Any JVM tuning done?
+
+**"Do you have monitoring/metrics showing?"**
+- Thread pool utilization
+- GC frequency/duration
+- Connection pool usage
+- Response time percentiles
+
+## 9. Code Architecture
+
+**"Why is everything synchronous?"**
+- Design decision or legacy constraint?
+- Spring Boot version allows async patterns?
+- Any concerns about implementing async?
+
+**"Could the login flow be redesigned?"**
+- Essential vs. nice-to-have data
+- Could some data be loaded on-demand?
+- Possibility of caching user context?
+
+## 10. Business Logic Questions
+
+**"Which data is absolutely required for successful login?"**
+```java
+// Looking at your flow:
+// 1. User details - Required
+// 2. Firm associations - Required
+// 3. Current date - Required?
+// 4. Firm schedule - Required for single firm only
+// 5. Cross validation groups - Required?
+// 6. Firm profile - Could be lazy-loaded?
+// 7. PSD/AIFMD profile - Could be lazy-loaded?
+```
+
+**"What business rules drive these service calls?"**
+- Why check principal user status during login?
+- Why load firm schedules immediately?
+- Could audit logging be asynchronous?
+
+## 11. Operational Context
+
+**"What time of day does this peak occur?"**
+- Business hours in specific timezone?
+- Batch job triggered logins?
+- Mobile app auto-refresh patterns?
+
+**"What changed recently?"**
+- Code deployments
+- Infrastructure changes
+- External service changes
+- Traffic pattern changes
+
+## 12. Optimization Constraints
+
+**"What are your constraints for implementing changes?"**
+- Deployment windows/frequency
+- Testing environment availability
+- Backwards compatibility requirements
+- Team capacity for changes
+
+## 13. Quick Wins Available
+
+**"Can you implement these immediately?"**
+- Connection pooling for RestTemplate
+- Basic caching for static data
+- Async audit logging
+- Increased thread pool sizes
+
+## 14. Monitoring & Observability
+
+**"What monitoring do you currently have?"**
+- Application logs detail level
+- Metrics collection (Micrometer?)
+- Distributed tracing
+- Error tracking
+
+**Sample Questions Script:**
+```
+1. "Show me the current Fargate task definition - CPU/memory allocated?"
+2. "What's the average response time for each external service call?"
+3. "Can we cache crossValidationGroups() for 5 minutes?"
+4. "What happens if userAuthAndFirmAssociations() takes 10 seconds to respond?"
+5. "Could audit logging be moved to a queue/async process?"
+6. "How many firms does a typical user have access to?"
+7. "Is currentDate() really needed for every login?"
+8. "What's your current RestTemplate configuration?"
+9. "Can we batch multiple service calls into one?"
+10. "What's the business impact if login takes 3 seconds instead of 1?"
+```
+
+## Priority Investigation Order:
+
+1. **External service response times** - Most likely bottleneck
+2. **Thread pool configuration** - Immediate fix available
+3. **Connection pooling** - Easy performance gain
+4. **Caching opportunities** - Quick wins
+5. **Async processing** - Architectural change for biggest impact
+
+These questions will help identify the exact bottleneck and reveal the most impactful optimizations to implement first.
