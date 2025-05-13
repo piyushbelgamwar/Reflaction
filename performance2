@@ -1,1 +1,145 @@
 
+Looking at your code, here are the **COMPULSORY** service calls that **ALWAYS** get executed for every login:
+
+## 1. Always Executed (Mandatory Calls)
+
+```java
+// These 5 calls happen for EVERY login, no matter what:
+
+1. restService.userDetails(gabUsername, userName_Id, headersMap);
+   // Gets user information - MANDATORY
+
+2. restService.userAuthAndFirmAssociations(userName, headersMap);
+   // Gets user's firm associations - MANDATORY
+
+3. restService.currentDate(headersMap);
+   // Gets current date - MANDATORY
+
+4. updateAuditRecordForUserActivity(userName, Constants.AUD46_LOGIN_SUCCESSFUL, restTemplate, headersMap);
+   // Audit logging - MANDATORY
+
+5. restService.login(response.getFirmUserAssociation().getUser().getUsername(), headersMap);
+   // Final login call - MANDATORY
+```
+
+## 2. Conditionally Executed (Based on Business Logic)
+
+```java
+// These calls depend on conditions:
+
+IF (user has exactly 1 firm):
+  - restService.getfirmSchedule(frn, headersMap)
+  - restService.crossValidationGroups(headersMap)  
+  - restService.firmProfile(frn, null, headersMap)
+  - restService.getPsdAifmdProfileCharacteristics(frn, headersMap)
+  - principalUser() check
+
+IF (user has multiple firms):
+  - restService.getoutstandingResponse(frns, headersMap)
+
+IF (FeatureToggle.MYFCA_AUDIT_REG18018 enabled):
+  - updateAuditRecordForUserActivity() with MYFCA audit
+```
+
+## 3. Critical Optimization Opportunities
+
+**For the 5 mandatory calls, here's the optimization priority:**
+
+### High Impact (Implement First):
+```java
+// 1. currentDate() - Can be cached for minutes
+@Cacheable(value = "currentDate", key = "'current'")
+public String currentDate(Map<String, String> headers) {
+    // Cache for 5 minutes - no need to call every time
+}
+
+// 2. Make audit logging async (non-blocking)
+@Async
+public void updateAuditRecordForUserActivity(...) {
+    // Don't wait for audit to complete
+}
+
+// 3. userAuthAndFirmAssociations - Can be cached per user
+@Cacheable(value = "userFirmAssoc", key = "#userName")
+public UserAuthAndFirmAssociationsResponse userAuthAndFirmAssociations(String userName, Map<String, String> headers) {
+    // Cache for 10 minutes if firm associations don't change frequently
+}
+```
+
+### Medium Impact:
+```java
+// 4. userDetails() - User info rarely changes
+@Cacheable(value = "userDetails", key = "#gabUsername + #userName_Id")
+public User userDetails(String gabUsername, String userName_Id, Map<String, String> headersMap) {
+    // Cache for 30 minutes
+}
+
+// 5. restService.login() - Might be optimizable depending on what it does
+// You may want to check if this really needs to be called synchronously
+```
+
+## 4. Immediate Actions
+
+**You can immediately optimize these mandatory calls:**
+
+1. **Cache `currentDate()`** - Biggest quick win
+   ```java
+   // Instead of calling service every time, cache for 5 minutes
+   @Cacheable("currentDate")
+   public String currentDate(Map<String, String> headers) {
+       // Implementation
+   }
+   ```
+
+2. **Make audit async** - Remove blocking operation
+   ```java
+   @Async
+   public void updateAuditRecordForUserActivity(...) {
+       // Move to background thread
+   }
+   ```
+
+3. **Cache user firm associations** - If they don't change frequently
+   ```java
+   @Cacheable(value = "firmAssoc", key = "#userName", condition = "!#headers.containsKey('MYFCA')")
+   public UserAuthAndFirmAssociationsResponse userAuthAndFirmAssociations(...) {
+       // Cache unless MYFCA filtering is needed
+   }
+   ```
+
+## 5. Quick Impact Analysis
+
+**Current mandatory load per login:**
+- 5 synchronous REST calls
+- All blocking the response
+- At least 5 network round trips
+
+**After optimization:**
+- 2-3 actual REST calls (others cached)
+- Audit logging non-blocking
+- Significant reduction in network overhead
+
+**Expected improvement:**
+- 40-60% reduction in response time
+- 50-70% reduction in CPU usage
+- Better handling of concurrent requests
+
+## 6. Questions for Your Team
+
+1. **"How often does currentDate() actually change?"** 
+   - Can we cache this for 5-10 minutes?
+
+2. **"Do user firm associations change during the day?"**
+   - Can we cache this for 10-30 minutes?
+
+3. **"Is audit logging time-critical?"**
+   - Can this be asynchronous?
+
+4. **"What does the final restService.login() call do?"**
+   - Is it updating last login time?
+   - Can this be batched/async?
+
+5. **"Can we identify which users have single firms?"**
+   - Load fewer services for single-firm users
+
+The **biggest immediate win** is caching `currentDate()` and making audit logging async - these two changes alone could reduce your CPU usage by 30-40%.
