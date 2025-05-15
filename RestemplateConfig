@@ -1,89 +1,31 @@
-package uk.org.fca.gabriel.aggregator.administration.config;
+@Bean 
+@Profile("!local") 
+public RestTemplate restTemplate() {
+    PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+    connectionManager.setMaxTotal(250);          // Increase for 600 users
+    connectionManager.setDefaultMaxPerRoute(75); // More connections per route
+    connectionManager.setValidateAfterInactivity(2000); // Faster validation
+    connectionManager.closeExpiredConnections();
+    connectionManager.closeIdleConnections(30, TimeUnit.SECONDS);
 
-import org.apache.http.conn.ssl.NoopHostnameVerifier;
-import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
-import org.apache.http.ssl.TrustStrategy;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Profile;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
-import org.springframework.web.client.RestTemplate;
+    // Add request config for better performance
+    RequestConfig requestConfig = RequestConfig.custom()
+            .setConnectTimeout(5000)
+            .setSocketTimeout(15000)  
+            .setConnectionRequestTimeout(3000)  // Reduced to fail faster
+            .build();
 
-import javax.net.ssl.SSLContext;
-import java.io.IOException;
-import java.security.KeyManagementException;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.util.concurrent.TimeUnit;
+    CloseableHttpClient httpClient = HttpClients.custom()
+            .setConnectionManager(connectionManager)
+            .setDefaultRequestConfig(requestConfig)
+            .setConnectionTimeToLive(30, TimeUnit.SECONDS)
+            .setConnectionReuseStrategy(DefaultConnectionReuseStrategy.INSTANCE)
+            .setKeepAliveStrategy(DefaultConnectionKeepAliveStrategy.INSTANCE)
+            .build();
 
-@Configuration
-public class RestTemplateConfig {
-    private static final Logger LOGGER = LoggerFactory.getLogger(RestTemplateConfig.class);
+    HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory();
+    requestFactory.setHttpClient(httpClient);
 
-    @Bean 
-    @Profile("local") 
-    public RestTemplate getRestTemplate() throws KeyStoreException, NoSuchAlgorithmException, KeyManagementException {
-        // Your existing local implementation
-        TrustStrategy acceptingTrustStrategy = new TrustStrategy() {
-            @Override
-            public boolean isTrusted(java.security.cert.X509Certificate[] x509Certificates, String s) throws java.security.cert.CertificateException {
-                return true;
-            }
-        };
-        CloseableHttpClient httpClient = null;
-        try{
-            SSLContext sslContext = org.apache.http.ssl.SSLContexts.custom().loadTrustMaterial(null, acceptingTrustStrategy).build();
-            SSLConnectionSocketFactory csf = new SSLConnectionSocketFactory(sslContext, new NoopHostnameVerifier());
-            httpClient = HttpClients.custom().setSSLSocketFactory(csf).build();
-
-            HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory();
-            requestFactory.setHttpClient(httpClient);
-            return new RestTemplate(requestFactory);
-        }finally{
-            safeClose(httpClient);
-        }
-    }
-
-    @Bean 
-    @Profile("!local") 
-    public RestTemplate restTemplate() {
-        // CRITICAL FIX: Add connection pooling for production environments
-        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
-        connectionManager.setMaxTotal(200);          // Maximum total connections
-        connectionManager.setDefaultMaxPerRoute(50); // Maximum connections per route
-        connectionManager.setValidateAfterInactivity(30000);
-        connectionManager.closeExpiredConnections();
-        connectionManager.closeIdleConnections(30, TimeUnit.SECONDS);
-
-        // Create HTTP client with connection pooling
-        CloseableHttpClient httpClient = HttpClients.custom()
-                .setConnectionManager(connectionManager)
-                .setConnectionTimeToLive(30, TimeUnit.SECONDS)
-                .build();
-
-        // Configure request factory with timeouts
-        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory();
-        requestFactory.setHttpClient(httpClient);
-        requestFactory.setConnectTimeout(5000);      // 5 second connection timeout
-        requestFactory.setReadTimeout(15000);        // 15 second read timeout
-        requestFactory.setConnectionRequestTimeout(5000); // Timeout to get connection from pool
-
-        LOGGER.info("RestTemplate configured with connection pooling for production environment");
-        return new RestTemplate(requestFactory);
-    }
-
-    private static void safeClose(CloseableHttpClient s) {
-        if (s != null ) {
-            try {
-                s.close();
-            } catch (IOException e) {
-                LOGGER.error("Error while closing the HTTP client",e);
-            }
-        }
-    }
+    LOGGER.info("RestTemplate configured with optimized connection pooling - MaxTotal: 250, MaxPerRoute: 75");
+    return new RestTemplate(requestFactory);
 }
